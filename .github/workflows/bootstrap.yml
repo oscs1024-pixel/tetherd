@@ -3,7 +3,7 @@ name: Bootstrap source
 on:
   push:
     paths:
-      - "bootstrap/source.tar.gz.b64"
+      - "bootstrap/parts/**"
       - ".github/workflows/bootstrap.yml"
 
 permissions:
@@ -20,7 +20,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base64 -d bootstrap/source.tar.gz.b64 > /tmp/tetherd-source.tar.gz
+          cat bootstrap/parts/part-* | base64 -d > /tmp/tetherd-source.tar.gz
           echo "49ab144e20e0371badfc600668678378b3b9110ba105c9f66e1d3b054a8ad0f8  /tmp/tetherd-source.tar.gz" | sha256sum -c -
           tar -xzf /tmp/tetherd-source.tar.gz -C .
           rm -rf bootstrap
