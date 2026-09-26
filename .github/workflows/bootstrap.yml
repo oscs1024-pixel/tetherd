@@ -24,37 +24,9 @@ jobs:
           echo "49ab144e20e0371badfc600668678378b3b9110ba105c9f66e1d3b054a8ad0f8  /tmp/tetherd-source.tar.gz" | sha256sum -c -
           tar -xzf /tmp/tetherd-source.tar.gz -C .
           sed -i 's/toml = "=0.8.19"/toml = "=0.8.23"/' Cargo.toml
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("src/logging.rs")
-          s = p.read_text()
-          old = '''#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
-#[serde(rename_all = "lowercase")]
-pub enum ColorMode {
-    Auto,
-    Always,
-    Never,
-}
-
-impl Default for ColorMode {
-    fn default() -> Self {
-        Self::Auto
-    }
-}
-'''
-          new = '''#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum ColorMode {
-    #[default]
-    Auto,
-    Always,
-    Never,
-}
-'''
-          if old not in s:
-              raise SystemExit("logging.rs patch target not found")
-          p.write_text(s.replace(old, new))
-          PY
+          sed -i 's/clap::ValueEnum)]/clap::ValueEnum, Default)]/' src/logging.rs
+          sed -i '/^    Auto,$/i\    #[default]' src/logging.rs
+          sed -i '/^impl Default for ColorMode {$/,/^}$/d' src/logging.rs
           rm -rf bootstrap
       - uses: dtolnay/rust-toolchain@stable
         with:
