@@ -1,0 +1,262 @@
+use std::collections::HashSet;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::process::Command;
+use tokio::sync::Semaphore;
+use uuid::Uuid;
+
+use crate::config::ExecConfig;
+use crate::protocol::message::Message;
+use crate::{Error, Result};
+
+#[derive(Clone)]
+pub struct Executor {
+    config: Arc<ExecConfig>,
+    allowed_canonical: Arc<HashSet<PathBuf>>,
+    semaphore: Arc<Semaphore>,
+}
+
+impl Executor {
+    pub fn new(config: ExecConfig) -> Result<Self> {
+        let max = config.max_concurrent;
+        let mut allowed_canonical = HashSet::with_capacity(config.allow_exec.len());
+        for program in &config.allow_exec {
+            let canonical = std::fs::canonicalize(program).map_err(|err| {
+                Error::Config(format!(
+                    "failed to resolve allowlisted executable {}: {err}",
+                    program.display()
+                ))
+            })?;
+            validate_executable(&canonical)?;
+            allowed_canonical.insert(canonical);
+        }
+        Ok(Self {
+            config: Arc::new(config),
+            allowed_canonical: Arc::new(allowed_canonical),
+            semaphore: Arc::new(Semaphore::new(max)),
+        })
+    }
+
+    pub async fn execute(&self, id: Uuid, argv: Vec<String>, timeout_secs: u64) -> Message {
+        let started = Instant::now();
+        match self.execute_inner(argv, timeout_secs).await {
+            Ok((exit_code, stdout, stderr, truncated, timed_out)) => Message::ExecResponse {
+                id,
+                exit_code,
+                stdout,
+                stderr,
+                truncated,
+                timed_out,
+                elapsed_ms: elapsed_ms(started),
+                error: None,
+            },
+            Err(error) => Message::ExecResponse {
+                id,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                truncated: false,
+                timed_out: matches!(error, Error::Timeout),
+                elapsed_ms: elapsed_ms(started),
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    async fn execute_inner(
+        &self,
+        argv: Vec<String>,
+        requested_timeout_secs: u64,
+    ) -> Result<(Option<i32>, String, String, bool, bool)> {
+        validate_argv(&argv)?;
+
+        let requested_program = Path::new(&argv[0]);
+        let canonical_program = std::fs::canonicalize(requested_program).map_err(|_| {
+            Error::ExecutionDenied(format!(
+                "executable is not available: {}",
+                requested_program.display()
+            ))
+        })?;
+        if !self.allowed_canonical.contains(&canonical_program) {
+            return Err(Error::ExecutionDenied(format!(
+                "executable is not allowlisted: {}",
+                requested_program.display()
+            )));
+        }
+        validate_executable(&canonical_program)?;
+
+        let timeout_secs = requested_timeout_secs.clamp(1, self.config.max_timeout_secs);
+        let _permit = self
+            .semaphore
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Error::ExecutionDenied("executor is busy".into()))?;
+
+        let mut command = Command::new(&canonical_program);
+        command.args(&argv[1..]);
+        command.stdin(Stdio::null());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+        command.kill_on_drop(true);
+        #[cfg(unix)]
+        command.as_std_mut().process_group(0);
+        if !self.config.inherit_env {
+            command.env_clear();
+        }
+        if let Some(work_dir) = &self.config.work_dir {
+            command.current_dir(work_dir);
+        }
+
+        log::info!(
+            "command starting program={} argc={} timeout={}s",
+            canonical_program.display(),
+            argv.len().saturating_sub(1),
+            timeout_secs
+        );
+
+        let mut child = command.spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::Protocol("child stdout was not piped".into()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| Error::Protocol("child stderr was not piped".into()))?;
+        let limit = self.config.max_output_bytes;
+        let stdout_task = tokio::spawn(drain_limited(stdout, limit));
+        let stderr_task = tokio::spawn(drain_limited(stderr, limit));
+
+        let wait_result =
+            tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait()).await;
+        let (status, timed_out) = match wait_result {
+            Ok(status) => (Some(status?), false),
+            Err(_) => {
+                kill_child_tree(&mut child);
+                let status = child.wait().await.ok();
+                (status, true)
+            }
+        };
+
+        let (stdout_bytes, stdout_truncated) = stdout_task
+            .await
+            .map_err(|_| Error::Protocol("stdout drain task failed".into()))??;
+        let (stderr_bytes, stderr_truncated) = stderr_task
+            .await
+            .map_err(|_| Error::Protocol("stderr drain task failed".into()))??;
+
+        Ok((
+            status.and_then(|s| s.code()),
+            String::from_utf8_lossy(&stdout_bytes).into_owned(),
+            String::from_utf8_lossy(&stderr_bytes).into_owned(),
+            stdout_truncated || stderr_truncated,
+            timed_out,
+        ))
+    }
+}
+
+fn validate_argv(argv: &[String]) -> Result<()> {
+    if argv.is_empty() {
+        return Err(Error::ExecutionDenied("argv must not be empty".into()));
+    }
+    if argv.len() > 128 {
+        return Err(Error::ExecutionDenied("too many arguments".into()));
+    }
+    if argv.iter().any(|arg| arg.as_bytes().contains(&0)) {
+        return Err(Error::ExecutionDenied(
+            "argv must not contain NUL bytes".into(),
+        ));
+    }
+    if argv.iter().any(|arg| arg.len() > 64 * 1024) {
+        return Err(Error::ExecutionDenied("argument exceeds 64 KiB".into()));
+    }
+    let total_arg_bytes = argv.iter().try_fold(0usize, |total, arg| {
+        total
+            .checked_add(arg.len())
+            .ok_or_else(|| Error::ExecutionDenied("combined argv size overflow".into()))
+    })?;
+    if total_arg_bytes > 256 * 1024 {
+        return Err(Error::ExecutionDenied(
+            "combined argv exceeds 256 KiB".into(),
+        ));
+    }
+    let program = Path::new(&argv[0]);
+    if !program.is_absolute() {
+        return Err(Error::ExecutionDenied(
+            "argv[0] must be an absolute executable path".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_executable(path: &Path) -> Result<()> {
+    let metadata = std::fs::metadata(path).map_err(|err| {
+        Error::Config(format!(
+            "failed to inspect allowlisted executable {}: {err}",
+            path.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(Error::Config(format!(
+            "allowlisted executable is not a regular file: {}",
+            path.display()
+        )));
+    }
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o111 == 0 {
+        return Err(Error::Config(format!(
+            "allowlisted executable is not executable: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn kill_child_tree(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) {
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(pid),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+    }
+    let _ = child.start_kill();
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+async fn drain_limited<R>(mut reader: R, limit: usize) -> Result<(Vec<u8>, bool)>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut stored = Vec::with_capacity(limit.min(64 * 1024));
+    let mut buf = [0u8; 8192];
+    let mut truncated = false;
+    loop {
+        let n = reader.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(stored.len());
+        if remaining > 0 {
+            let take = remaining.min(n);
+            stored.extend_from_slice(&buf[..take]);
+            if take < n {
+                truncated = true;
+            }
+        } else {
+            truncated = true;
+        }
+    }
+    Ok((stored, truncated))
+}

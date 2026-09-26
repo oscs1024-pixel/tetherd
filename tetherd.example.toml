@@ -1,0 +1,37 @@
+[log]
+level = "info"
+color = "auto"
+
+[auth]
+credential = "pair"
+# Exactly one PSK source is required. The file must be owner-only (0600) on Unix.
+psk_file = "/etc/tetherd/psk"
+# psk_env = "TETHERD_PSK"
+
+[daemon]
+listen = "0.0.0.0:1234"
+control_socket = "/run/tetherd/tetherd.sock"
+heartbeat_timeout_secs = 180
+handshake_timeout_secs = 10
+max_connections = 128
+control_timeout_secs = 30
+control_request_timeout_secs = 5
+max_control_connections = 64
+
+[join]
+server = "203.0.113.10:1234"
+name = "alice"
+heartbeat_secs = 60
+heartbeat_timeout_secs = 180
+reconnect_secs = 5
+connect_timeout_secs = 10
+
+[exec]
+# argv[0] must exactly match one of these absolute paths. No shell is inserted.
+allow_exec = ["/bin/echo", "/usr/bin/uptime"]
+max_timeout_secs = 30
+max_output_bytes = 1048576
+max_concurrent = 4
+# Default false: child receives an empty environment.
+inherit_env = false
+# work_dir = "/var/empty"

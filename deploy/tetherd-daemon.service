@@ -1,0 +1,30 @@
+[Unit]
+Description=tetherd public daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tetherd
+Group=tetherd
+ExecStart=/usr/local/bin/tetherd --config /etc/tetherd/tetherd.toml daemon
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+RuntimeDirectory=tetherd
+RuntimeDirectoryMode=0700
+ReadWritePaths=/run/tetherd
+
+[Install]
+WantedBy=multi-user.target
