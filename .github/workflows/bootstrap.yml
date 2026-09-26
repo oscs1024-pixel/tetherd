@@ -36,6 +36,7 @@ jobs:
         run: |
           cargo fmt --all
           cargo generate-lockfile
+          cargo update -p zeroize_derive --precise 1.4.3
       - name: Stable toolchain verification
         run: |
           cargo clippy --all-targets --all-features -- -D warnings
