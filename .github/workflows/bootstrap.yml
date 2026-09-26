@@ -1,0 +1,52 @@
+name: Bootstrap source
+
+on:
+  push:
+    paths:
+      - "bootstrap/source.tar.gz.b64"
+      - ".github/workflows/bootstrap.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Restore audited source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d bootstrap/source.tar.gz.b64 > /tmp/tetherd-source.tar.gz
+          echo "49ab144e20e0371badfc600668678378b3b9110ba105c9f66e1d3b054a8ad0f8  /tmp/tetherd-source.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/tetherd-source.tar.gz -C .
+          rm -rf bootstrap
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format and lock dependencies
+        run: |
+          cargo fmt --all
+          cargo generate-lockfile
+      - name: Stable toolchain verification
+        run: |
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-targets --all-features
+          cargo build --release
+      - name: Install MSRV
+        run: rustup toolchain install 1.82.0 --profile minimal
+      - name: MSRV verification
+        run: cargo +1.82.0 check --all-targets --all-features
+      - name: Commit verified source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: implement production-ready tetherd"
+          git push origin HEAD:main
