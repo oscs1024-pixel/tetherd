@@ -23,6 +23,7 @@ jobs:
           cat bootstrap/parts/part-00a bootstrap/parts/part-00b bootstrap/parts/part-01 bootstrap/parts/part-02 bootstrap/parts/part-03 bootstrap/parts/part-04 | base64 -d > /tmp/tetherd-source.tar.gz
           echo "49ab144e20e0371badfc600668678378b3b9110ba105c9f66e1d3b054a8ad0f8  /tmp/tetherd-source.tar.gz" | sha256sum -c -
           tar -xzf /tmp/tetherd-source.tar.gz -C .
+          sed -i 's/toml = "=0.8.19"/toml = "=0.8.23"/' Cargo.toml
           rm -rf bootstrap
       - uses: dtolnay/rust-toolchain@stable
         with:
