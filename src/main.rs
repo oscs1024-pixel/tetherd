@@ -6,7 +6,7 @@ use tokio::sync::watch;
 
 use tetherd::cli::{Cli, Commands, CtlAction};
 use tetherd::config::Config;
-use tetherd::logging::{parse_level, Logger};
+use tetherd::logging::{parse_level, resolve_color, Logger};
 use tetherd::protocol::message::ControlRequest;
 use tetherd::{ctl, daemon, join, keygen, Error, Result};
 
@@ -23,10 +23,7 @@ fn resolve_logging(
     } else {
         log::LevelFilter::Info
     };
-    let color = cli
-        .log_color
-        .or_else(|| config.map(|c| c.log.color))
-        .unwrap_or_default();
+    let color = resolve_color(cli.log_color, config.map(|c| c.log.color));
     Ok((level, color))
 }
 
