@@ -42,6 +42,35 @@ fn config_requires_exactly_one_psk_source() {
 }
 
 #[test]
+fn config_rejects_unknown_fields() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let raw = base_config("psk_env = \"TETHERD_TEST_PSK\"")
+        .replace("allow_exec = [\"/bin/echo\"]", "allow_exec = [\"/bin/echo\"]\ninherit_env = true");
+    fs::write(&path, raw).unwrap();
+    assert!(Config::load(&path).is_err());
+}
+
+#[test]
+fn config_rejects_excessive_resource_limits() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let raw = base_config("psk_env = \"TETHERD_TEST_PSK\"")
+        .replace("control_socket = \"/tmp/tetherd-test.sock\"", "control_socket = \"/tmp/tetherd-test.sock\"\nmax_connections = 999999");
+    fs::write(&path, raw).unwrap();
+    assert!(Config::load(&path).is_err());
+}
+
+#[test]
+fn config_file_rejects_group_or_world_write() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, base_config("psk_env = \"TETHERD_TEST_PSK\"")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+    assert!(Config::load(&path).is_err());
+}
+
+#[test]
 fn secret_file_rejects_group_or_other_access() {
     let dir = tempdir().unwrap();
     let psk = dir.path().join("psk");
@@ -67,6 +96,18 @@ fn secret_file_rejects_symlink() {
     fs::write(&config_path, base_config(&format!("psk_file = {:?}", link))).unwrap();
     let config = Config::load(&config_path).unwrap();
     assert!(config.auth.load_psk().is_err());
+}
+
+#[test]
+fn config_rejects_psk_env_export_to_child() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let raw = base_config("psk_env = \"TETHERD_TEST_PSK\"").replace(
+        "allow_exec = [\"/bin/echo\"]",
+        "allow_exec = [\"/bin/echo\"]\n[exec.env]\nTETHERD_TEST_PSK = \"must-not-leak\"",
+    );
+    fs::write(&path, raw).unwrap();
+    assert!(Config::load(&path).is_err());
 }
 
 #[test]
