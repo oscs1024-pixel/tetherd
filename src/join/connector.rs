@@ -313,8 +313,88 @@ async fn send_execution_result(tx: &mpsc::Sender<Message>, result: ExecutionResu
 
 #[cfg(test)]
 mod tests {
-    use super::reconnect_delay;
+    use super::{reconnect_delay, send_execution_result};
+    use crate::config::{CommandProfile, ExecConfig};
+    use crate::join::executor::Executor;
+    use crate::protocol::message::Message;
     use rand::{rngs::StdRng, SeedableRng};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn executor_permit_is_held_until_result_frames_are_queued() {
+        let mut commands = HashMap::new();
+        commands.insert(
+            "echo".to_owned(),
+            CommandProfile {
+                program: PathBuf::from("/bin/echo"),
+                fixed_args: Vec::new(),
+                allow_user_args: true,
+                max_user_args: 4,
+                max_user_arg_bytes: 1024,
+            },
+        );
+        let executor = Executor::new(ExecConfig {
+            commands,
+            allow_exec: Vec::new(),
+            max_timeout_secs: 2,
+            max_output_bytes: 4096,
+            max_concurrent: 1,
+            work_dir: None,
+            inherit_env: false,
+            drain_grace_secs: 1,
+        })
+        .unwrap();
+
+        let permit = executor.try_reserve().unwrap();
+        let (tx, mut rx) = mpsc::channel::<Message>(1);
+        tx.send(Message::Ping { nonce: 1 }).await.unwrap();
+
+        let worker_executor = executor.clone();
+        let worker_tx = tx.clone();
+        let worker = tokio::spawn(async move {
+            let result = worker_executor
+                .execute_reserved(
+                    &permit,
+                    Uuid::new_v4(),
+                    "echo".into(),
+                    vec!["held".into()],
+                    1,
+                )
+                .await;
+            let sent = send_execution_result(&worker_tx, result).await;
+            drop(permit);
+            sent
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            executor.try_reserve().is_err(),
+            "permit must remain held while result delivery is backpressured"
+        );
+
+        assert!(matches!(rx.recv().await, Some(Message::Ping { nonce: 1 })));
+        let output = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(output, Message::ExecOutputChunk { .. }));
+        assert!(
+            executor.try_reserve().is_err(),
+            "permit must remain held until ExecFinished is queued"
+        );
+        let finished = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(finished, Message::ExecFinished { .. }));
+
+        worker.await.unwrap().unwrap();
+        assert!(executor.try_reserve().is_ok());
+    }
 
     #[test]
     fn reconnect_backoff_is_capped_and_permanent_errors_slow_down() {
