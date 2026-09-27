@@ -203,7 +203,7 @@ async fn executor_returns_busy_instead_of_queueing_unbounded_work() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn executor_rejects_command_symlink_after_target_changes() {
+async fn executor_pins_canonical_target_when_configured_symlink_changes() {
     use std::os::unix::fs::symlink;
     let dir = tempfile::tempdir().unwrap();
     let link = dir.path().join("tool");
@@ -228,12 +228,10 @@ async fn executor_rejects_command_symlink_after_target_changes() {
         .await;
     match result {
         Message::ExecResponse {
-            error: Some(error), ..
-        } => assert!(
-            error.contains("identity changed")
-                || error.contains("not available")
-                || error.contains("not trusted")
-        ),
+            stdout,
+            error: None,
+            ..
+        } => assert_eq!(stdout, "0\n"),
         other => panic!("unexpected response: {other:?}"),
     }
 }
