@@ -24,17 +24,11 @@ pub struct Logger {
 
 impl Logger {
     pub fn init(level: LevelFilter, color_mode: ColorMode) -> Result<()> {
-        let mut use_color = match color_mode {
+        let use_color = match color_mode {
             ColorMode::Always => true,
             ColorMode::Never => false,
             ColorMode::Auto => std::io::stderr().is_terminal(),
         };
-
-        if std::env::var_os("NO_COLOR").is_some() {
-            use_color = false;
-        } else if std::env::var_os("FORCE_COLOR").is_some() {
-            use_color = true;
-        }
 
         let logger = Box::new(Self {
             level,
@@ -94,4 +88,20 @@ fn level_color_code(level: Level) -> u8 {
 
 pub fn parse_level(value: &str) -> Result<LevelFilter> {
     LevelFilter::from_str(value).map_err(|_| Error::Config(format!("invalid log level: {value}")))
+}
+
+pub fn resolve_color(
+    cli_override: Option<ColorMode>,
+    configured: Option<ColorMode>,
+) -> ColorMode {
+    if let Some(mode) = cli_override {
+        return mode;
+    }
+    if std::env::var_os("NO_COLOR").is_some() {
+        return ColorMode::Never;
+    }
+    if std::env::var_os("FORCE_COLOR").is_some() {
+        return ColorMode::Always;
+    }
+    configured.unwrap_or_default()
 }
