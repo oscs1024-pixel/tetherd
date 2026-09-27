@@ -1,0 +1,31 @@
+[package]
+name = "tetherd-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.tetherd]
+path = ".."
+
+[[bin]]
+name = "cipher_open"
+path = "fuzz_targets/cipher_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "message_json"
+path = "fuzz_targets/message_json.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
