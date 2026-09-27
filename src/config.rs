@@ -345,8 +345,7 @@ fn default_max_user_arg_bytes() -> usize {
 
 impl Config {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-        validate_config_file(path.as_ref())?;
-        let raw = fs::read_to_string(path.as_ref())?;
+        let raw = read_config_file(path.as_ref())?;
         let config: Self = toml::from_str(&raw)?;
         config.validate()?;
         Ok(config)
@@ -507,10 +506,19 @@ fn validate_identifier(field: &str, value: &str) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn validate_config_file(path: &Path) -> Result<()> {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.file_type().is_file() {
+fn read_config_file(path: &Path) -> Result<String> {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+    // Open once, validate the opened descriptor, then read from that same
+    // descriptor. This removes the pathname TOCTOU window between validation
+    // and parsing and rejects a final-component symlink.
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
         return Err(Error::Config(format!(
             "configuration path is not a regular file: {}",
             path.display()
@@ -531,19 +539,25 @@ fn validate_config_file(path: &Path) -> Result<()> {
             metadata.uid()
         )));
     }
-    Ok(())
+
+    let mut raw = String::new();
+    file.read_to_string(&mut raw)?;
+    Ok(raw)
 }
 
 #[cfg(not(unix))]
-fn validate_config_file(path: &Path) -> Result<()> {
-    let metadata = fs::metadata(path)?;
+fn read_config_file(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path)?;
+    let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(Error::Config(format!(
             "configuration path is not a regular file: {}",
             path.display()
         )));
     }
-    Ok(())
+    let mut raw = String::new();
+    file.read_to_string(&mut raw)?;
+    Ok(raw)
 }
 
 fn validate_argument_vector(
