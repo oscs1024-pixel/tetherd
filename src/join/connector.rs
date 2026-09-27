@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
-use uuid::Uuid;
 
 use crate::config::Config;
 use crate::join::executor::Executor;
