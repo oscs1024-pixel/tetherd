@@ -8,7 +8,7 @@ use subtle::ConstantTimeEq;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use x25519_dalek::{PublicKey, StaticSecret};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::protocol::cipher::{CipherState, SessionKeys};
 use crate::protocol::frame::{read_json_frame_limited, write_json_frame};
@@ -53,6 +53,8 @@ fn auth_tag(
     server_nonce: &[u8; 32],
 ) -> Result<[u8; 32]> {
     let mut mac = HmacSha256::new_from_slice(psk).map_err(|_| Error::Crypto)?;
+    mac.update(b"tetherd-handshake");
+    mac.update(&PROTOCOL_VERSION.to_be_bytes());
     mac.update(label);
     mac.update(client_pub);
     mac.update(server_pub);
@@ -70,9 +72,8 @@ fn verify_tag(expected: &[u8; 32], actual: &[u8; 32]) -> Result<()> {
     }
 }
 
-fn reject_all_zero_shared(shared: &mut [u8; 32]) -> Result<()> {
+fn reject_all_zero_shared(shared: &[u8; 32]) -> Result<()> {
     if shared.ct_eq(&[0u8; 32]).into() {
-        shared.zeroize();
         Err(Error::Authentication)
     } else {
         Ok(())
@@ -88,7 +89,9 @@ fn derive_keys(
     server_nonce: &[u8; 32],
 ) -> Result<SessionKeys> {
     let mut h = Sha256::new();
-    h.update(b"tetherd-transcript-v1");
+    h.update(b"tetherd-transcript");
+    h.update(PROTOCOL_VERSION.to_be_bytes());
+    h.update(b"x25519+hmac-sha256+hkdf-sha256+chacha20poly1305");
     h.update(client_pub);
     h.update(server_pub);
     h.update(client_nonce);
@@ -149,8 +152,8 @@ pub async fn client_handshake(mut stream: TcpStream, psk: &[u8]) -> Result<Secur
     write_json_frame(&mut stream, &ClientAuth { tag: client_tag }).await?;
 
     let server_pub = PublicKey::from(server.server_pub);
-    let mut shared = secret.diffie_hellman(&server_pub).to_bytes();
-    reject_all_zero_shared(&mut shared)?;
+    let shared = Zeroizing::new(secret.diffie_hellman(&server_pub).to_bytes());
+    reject_all_zero_shared(&shared)?;
     let mut keys = derive_keys(
         &shared,
         psk,
@@ -159,7 +162,6 @@ pub async fn client_handshake(mut stream: TcpStream, psk: &[u8]) -> Result<Secur
         &client_nonce,
         &server.nonce,
     )?;
-    shared.zeroize();
     let send_cipher = CipherState::new(&keys.c2s, *b"C2S1");
     let recv_cipher = CipherState::new(&keys.s2c, *b"S2C1");
     keys.zeroize();
@@ -217,8 +219,8 @@ pub async fn server_handshake(mut stream: TcpStream, psk: &[u8]) -> Result<Secur
     verify_tag(&expected, &auth.tag)?;
 
     let client_pub = PublicKey::from(client.client_pub);
-    let mut shared = secret.diffie_hellman(&client_pub).to_bytes();
-    reject_all_zero_shared(&mut shared)?;
+    let shared = Zeroizing::new(secret.diffie_hellman(&client_pub).to_bytes());
+    reject_all_zero_shared(&shared)?;
     let mut keys = derive_keys(
         &shared,
         psk,
@@ -227,7 +229,6 @@ pub async fn server_handshake(mut stream: TcpStream, psk: &[u8]) -> Result<Secur
         &client.nonce,
         &server_nonce,
     )?;
-    shared.zeroize();
     let recv_cipher = CipherState::new(&keys.c2s, *b"C2S1");
     let send_cipher = CipherState::new(&keys.s2c, *b"S2C1");
     keys.zeroize();
@@ -246,15 +247,14 @@ mod tests {
 
     #[test]
     fn all_zero_shared_secret_is_rejected() {
-        let mut shared = [0u8; 32];
-        assert!(reject_all_zero_shared(&mut shared).is_err());
-        assert_eq!(shared, [0u8; 32]);
+        let shared = [0u8; 32];
+        assert!(reject_all_zero_shared(&shared).is_err());
     }
 
     #[test]
     fn nonzero_shared_secret_is_accepted() {
         let mut shared = [0u8; 32];
         shared[7] = 1;
-        assert!(reject_all_zero_shared(&mut shared).is_ok());
+        assert!(reject_all_zero_shared(&shared).is_ok());
     }
 }
