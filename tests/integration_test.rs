@@ -180,10 +180,9 @@ write_timeout_secs = 2
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
         let mut channel = server_handshake(stream, &psk).await.unwrap();
-        let registration: Message =
-            read_encrypted(&mut channel.reader, &mut channel.recv_cipher)
-                .await
-                .unwrap();
+        let registration: Message = read_encrypted(&mut channel.reader, &mut channel.recv_cipher)
+            .await
+            .unwrap();
         assert!(matches!(registration, Message::Register { .. }));
         write_encrypted(
             &mut channel.writer,

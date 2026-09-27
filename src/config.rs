@@ -419,7 +419,9 @@ impl Config {
             || self.exec.max_timeout_secs > 3600
             || self.exec.drain_grace_secs > 30
         {
-            return Err(Error::Config("configured resource/timeout limit exceeds the production safety ceiling".into()));
+            return Err(Error::Config(
+                "configured resource/timeout limit exceeds the production safety ceiling".into(),
+            ));
         }
         if self.exec.inherit_env {
             return Err(Error::Config(
@@ -470,7 +472,12 @@ impl Config {
                     "exec.commands.{name} sets user argument limits but allow_user_args=false"
                 )));
             }
-            validate_argument_vector(&format!("exec.commands.{name}.fixed_args"), &profile.fixed_args, 64, 64 * 1024)?;
+            validate_argument_vector(
+                &format!("exec.commands.{name}.fixed_args"),
+                &profile.fixed_args,
+                64,
+                64 * 1024,
+            )?;
         }
         Ok(())
     }
@@ -504,7 +511,10 @@ fn validate_config_file(path: &Path) -> Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.file_type().is_file() {
-        return Err(Error::Config(format!("configuration path is not a regular file: {}", path.display())));
+        return Err(Error::Config(format!(
+            "configuration path is not a regular file: {}",
+            path.display()
+        )));
     }
     let mode = metadata.permissions().mode() & 0o777;
     if mode & 0o022 != 0 {
@@ -528,7 +538,10 @@ fn validate_config_file(path: &Path) -> Result<()> {
 fn validate_config_file(path: &Path) -> Result<()> {
     let metadata = fs::metadata(path)?;
     if !metadata.is_file() {
-        return Err(Error::Config(format!("configuration path is not a regular file: {}", path.display())));
+        return Err(Error::Config(format!(
+            "configuration path is not a regular file: {}",
+            path.display()
+        )));
     }
     Ok(())
 }
@@ -540,19 +553,25 @@ fn validate_argument_vector(
     max_bytes: usize,
 ) -> Result<()> {
     if args.len() > max_args {
-        return Err(Error::Config(format!("{field} contains too many arguments")));
+        return Err(Error::Config(format!(
+            "{field} contains too many arguments"
+        )));
     }
     let mut total = 0usize;
     for arg in args {
         if arg.as_bytes().contains(&0) || arg.chars().any(char::is_control) {
-            return Err(Error::Config(format!("{field} contains NUL/control characters")));
+            return Err(Error::Config(format!(
+                "{field} contains NUL/control characters"
+            )));
         }
         total = total
             .checked_add(arg.len())
             .ok_or_else(|| Error::Config(format!("{field} byte count overflow")))?;
     }
     if total > max_bytes {
-        return Err(Error::Config(format!("{field} exceeds the configured byte ceiling")));
+        return Err(Error::Config(format!(
+            "{field} exceeds the configured byte ceiling"
+        )));
     }
     Ok(())
 }

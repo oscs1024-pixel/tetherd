@@ -278,11 +278,7 @@ async fn connect_once(
     result
 }
 
-
-async fn send_execution_result(
-    tx: &mpsc::Sender<Message>,
-    result: ExecutionResult,
-) -> Result<()> {
+async fn send_execution_result(tx: &mpsc::Sender<Message>, result: ExecutionResult) -> Result<()> {
     let mut sequence = 0u32;
     for (stream, bytes) in [
         (OutputStream::Stdout, result.stdout.as_slice()),

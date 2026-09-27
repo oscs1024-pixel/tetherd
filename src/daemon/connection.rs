@@ -486,7 +486,11 @@ mod tests {
         let session_id = Uuid::new_v4();
         let (peer_tx, _peer_rx) = mpsc::channel::<Message>(SESSION_QUEUE_CAPACITY);
         for nonce in 0..SESSION_QUEUE_CAPACITY {
-            peer_tx.try_send(Message::Ping { nonce: nonce as u64 }).unwrap();
+            peer_tx
+                .try_send(Message::Ping {
+                    nonce: nonce as u64,
+                })
+                .unwrap();
         }
         let (cancel_tx, _cancel_rx) = watch::channel(false);
         state.peers.write().await.insert(

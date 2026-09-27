@@ -34,12 +34,7 @@ fn config(programs: Vec<(&str, PathBuf, bool)>) -> ExecConfig {
 
 #[tokio::test]
 async fn executor_denies_unknown_profile() {
-    let executor = Executor::new(config(vec![(
-        "echo",
-        PathBuf::from("/bin/echo"),
-        true,
-    )]))
-    .unwrap();
+    let executor = Executor::new(config(vec![("echo", PathBuf::from("/bin/echo"), true)])).unwrap();
     let result = executor
         .execute(
             Uuid::new_v4(),
@@ -84,19 +79,9 @@ async fn executor_rejects_user_args_when_profile_does_not_allow_them() {
 
 #[tokio::test]
 async fn executor_runs_arguments_without_shell_interpretation() {
-    let executor = Executor::new(config(vec![(
-        "echo",
-        PathBuf::from("/bin/echo"),
-        true,
-    )]))
-    .unwrap();
+    let executor = Executor::new(config(vec![("echo", PathBuf::from("/bin/echo"), true)])).unwrap();
     let result = executor
-        .execute(
-            Uuid::new_v4(),
-            "echo".into(),
-            vec!["hello;uname".into()],
-            1,
-        )
+        .execute(Uuid::new_v4(), "echo".into(), vec!["hello;uname".into()], 1)
         .await;
     assert_eq!(result.error, None);
     assert_eq!(result.stdout, b"hello;uname\n");
@@ -125,19 +110,10 @@ async fn executor_truncates_but_drains_output() {
 
 #[tokio::test]
 async fn executor_kills_on_timeout() {
-    let executor = Executor::new(config(vec![(
-        "sleep",
-        PathBuf::from("/bin/sleep"),
-        true,
-    )]))
-    .unwrap();
+    let executor =
+        Executor::new(config(vec![("sleep", PathBuf::from("/bin/sleep"), true)])).unwrap();
     let result = executor
-        .execute(
-            Uuid::new_v4(),
-            "sleep".into(),
-            vec!["5".into()],
-            1,
-        )
+        .execute(Uuid::new_v4(), "sleep".into(), vec!["5".into()], 1)
         .await;
     assert!(result.timed_out);
 }
@@ -154,23 +130,13 @@ async fn executor_returns_busy_instead_of_queueing_unbounded_work() {
         let executor = executor.clone();
         tokio::spawn(async move {
             executor
-                .execute(
-                    Uuid::new_v4(),
-                    "sleep".into(),
-                    vec!["1".into()],
-                    2,
-                )
+                .execute(Uuid::new_v4(), "sleep".into(), vec!["1".into()], 2)
                 .await
         })
     };
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let second = executor
-        .execute(
-            Uuid::new_v4(),
-            "echo".into(),
-            vec!["busy".into()],
-            1,
-        )
+        .execute(Uuid::new_v4(), "echo".into(), vec!["busy".into()], 1)
         .await;
     assert!(
         second
@@ -184,12 +150,8 @@ async fn executor_returns_busy_instead_of_queueing_unbounded_work() {
 
 #[tokio::test]
 async fn executor_never_inherits_parent_environment() {
-    let executor = Executor::new(config(vec![(
-        "env",
-        PathBuf::from("/usr/bin/env"),
-        false,
-    )]))
-    .unwrap();
+    let executor =
+        Executor::new(config(vec![("env", PathBuf::from("/usr/bin/env"), false)])).unwrap();
     std::env::set_var("TETHERD_TEST_SECRET_DO_NOT_LEAK", "secret-value");
     let result = executor
         .execute(Uuid::new_v4(), "env".into(), Vec::new(), 1)
@@ -236,12 +198,7 @@ async fn executor_pins_symlink_target_at_startup() {
     symlink("/bin/sleep", &link).unwrap();
 
     let result = executor
-        .execute(
-            Uuid::new_v4(),
-            "tool".into(),
-            vec!["0".into()],
-            1,
-        )
+        .execute(Uuid::new_v4(), "tool".into(), vec!["0".into()], 1)
         .await;
     assert_eq!(result.error, None);
     assert_eq!(result.stdout, b"0\n");
