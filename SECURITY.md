@@ -24,14 +24,16 @@ Changes must preserve these invariants:
 10. Socket writes have deadlines and writer failure tears down the session.
 11. The handshake transcript binds protocol identity/version, and X25519 all-zero shared secrets are rejected.
 12. PSK loading rejects symbolic links and validates the opened file descriptor's type, owner and mode.
-13. Configuration parsing rejects unknown fields and unsafe file ownership/write permissions.
+13. Configuration loading opens once with `O_NOFOLLOW|O_CLOEXEC`, validates that same file descriptor, and parses from it; configuration parsing rejects unknown fields and unsafe ownership/write permissions.
 14. Unix control sockets use mode `0600`, same-UID peer verification and trusted parent directories.
 15. Reconnect cleanup is scoped to a unique session ID; stale sessions cannot remove replacement state.
 16. Remote command output is binary-safe, chunked, strictly sequenced and bounded before aggregation.
-17. Authentication/protocol failures are rate-limited/slow-backed off; public handshakes have global and per-IP rate ceilings.
-18. CI must pass formatting, Clippy `-D warnings`, tests, release build, Rust 1.82 MSRV and `cargo audit --deny warnings`.
-19. Third-party Actions are pinned to immutable commit SHAs.
-20. Release artifacts are produced only after release-source verification and include provenance attestation.
+17. Executor admission remains held through result enqueue, and command runtime deadlines are distinct from output-inactivity deadlines with an absolute transfer ceiling.
+18. Frame limits are explicit per trust surface: handshake, authenticated peer, UDS request and UDS response.
+19. Authentication/protocol failures are rate-limited/slow-backed off; public handshakes have global and per-IP rate ceilings.
+20. CI must pass formatting, Clippy `-D warnings`, tests, release build, Rust 1.82 MSRV and `cargo audit --deny warnings`.
+21. Third-party Actions are pinned to immutable commit SHAs.
+22. Release artifacts are produced only after release-source verification and include provenance attestation.
 
 ## Deployment assumptions
 
