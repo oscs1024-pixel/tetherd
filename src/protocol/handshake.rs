@@ -11,7 +11,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroize;
 
 use crate::protocol::cipher::{CipherState, SessionKeys};
-use crate::protocol::frame::{read_json_frame_limited, write_json_frame};
+use crate::protocol::frame::{read_json_frame_limited, write_json_frame_limited};
 use crate::protocol::{MAX_HANDSHAKE_FRAME_BYTES, PROTOCOL_VERSION};
 use crate::{Error, Result};
 
@@ -121,7 +121,7 @@ pub async fn client_handshake(mut stream: TcpStream, psk: &[u8]) -> Result<Secur
         client_pub,
         nonce: client_nonce,
     };
-    write_json_frame(&mut stream, &hello).await?;
+    write_json_frame_limited(&mut stream, &hello, MAX_HANDSHAKE_FRAME_BYTES).await?;
 
     let server: ServerHello =
         read_json_frame_limited(&mut stream, MAX_HANDSHAKE_FRAME_BYTES).await?;
@@ -149,7 +149,12 @@ pub async fn client_handshake(mut stream: TcpStream, psk: &[u8]) -> Result<Secur
         &client_nonce,
         &server.nonce,
     )?;
-    write_json_frame(&mut stream, &ClientAuth { tag: client_tag }).await?;
+    write_json_frame_limited(
+        &mut stream,
+        &ClientAuth { tag: client_tag },
+        MAX_HANDSHAKE_FRAME_BYTES,
+    )
+    .await?;
 
     let server_pub = PublicKey::from(server.server_pub);
     let mut shared = secret.diffie_hellman(&server_pub).to_bytes();
@@ -197,7 +202,7 @@ pub async fn server_handshake(mut stream: TcpStream, psk: &[u8]) -> Result<Secur
         &client.nonce,
         &server_nonce,
     )?;
-    write_json_frame(
+    write_json_frame_limited(
         &mut stream,
         &ServerHello {
             version: PROTOCOL_VERSION,
@@ -205,6 +210,7 @@ pub async fn server_handshake(mut stream: TcpStream, psk: &[u8]) -> Result<Secur
             nonce: server_nonce,
             tag: server_tag,
         },
+        MAX_HANDSHAKE_FRAME_BYTES,
     )
     .await?;
 
