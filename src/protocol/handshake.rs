@@ -53,6 +53,8 @@ fn auth_tag(
     server_nonce: &[u8; 32],
 ) -> Result<[u8; 32]> {
     let mut mac = HmacSha256::new_from_slice(psk).map_err(|_| Error::Crypto)?;
+    mac.update(b"tetherd-handshake");
+    mac.update(&PROTOCOL_VERSION.to_be_bytes());
     mac.update(label);
     mac.update(client_pub);
     mac.update(server_pub);
@@ -88,7 +90,8 @@ fn derive_keys(
     server_nonce: &[u8; 32],
 ) -> Result<SessionKeys> {
     let mut h = Sha256::new();
-    h.update(b"tetherd-transcript-v1");
+    h.update(b"tetherd-transcript");
+    h.update(PROTOCOL_VERSION.to_be_bytes());
     h.update(client_pub);
     h.update(server_pub);
     h.update(client_nonce);
