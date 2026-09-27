@@ -663,12 +663,16 @@ fn validate_usize_range(field: &str, value: usize, min: usize, max: usize) -> Re
 
 fn validate_args(field: &str, args: &[String]) -> Result<()> {
     if args.len() > 128 {
-        return Err(Error::Config(format!("{field} contains too many arguments")));
+        return Err(Error::Config(format!(
+            "{field} contains too many arguments"
+        )));
     }
     let mut total = 0usize;
     for arg in args {
         if arg.as_bytes().contains(&0) || arg.len() > 64 * 1024 {
-            return Err(Error::Config(format!("{field} contains an invalid argument")));
+            return Err(Error::Config(format!(
+                "{field} contains an invalid argument"
+            )));
         }
         total = total
             .checked_add(arg.len())
