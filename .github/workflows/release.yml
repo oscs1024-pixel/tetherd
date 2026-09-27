@@ -10,17 +10,46 @@ permissions:
   contents: read
 
 jobs:
+  verify:
+    name: verify release source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --all-targets --all-features
+      - name: Verify MSRV
+        run: |
+          rustup toolchain install 1.82.0 --profile minimal
+          cargo +1.82.0 check --locked --all-targets --all-features
+      - name: Verify RustSec
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit --deny warnings
+
   build:
-    name: release build (${{ matrix.os }})
+    name: release-build-${{ matrix.os }}
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo build --locked --release
       - name: Package
         shell: bash
@@ -29,17 +58,21 @@ jobs:
           os="$(printf '%s' "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')"
           arch="$(printf '%s' "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]')"
           name="tetherd-${os}-${arch}"
-          mkdir -p dist
-          cp target/release/tetherd dist/tetherd
-          cp README.md LICENSE SECURITY.md tetherd.example.toml dist/
-          tar -C dist -czf "${name}.tar.gz" .
-          shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
-      - uses: actions/upload-artifact@v4
+          mkdir -p dist/package
+          cp target/release/tetherd dist/package/tetherd
+          cp README.md LICENSE SECURITY.md tetherd.example.toml Cargo.lock dist/package/
+          cargo metadata --locked --format-version=1 > dist/package/cargo-metadata.json
+          tar -C dist/package -czf "dist/${name}.tar.gz" .
+          shasum -a 256 "dist/${name}.tar.gz" > "dist/${name}.tar.gz.sha256"
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: "dist/tetherd-*.tar.gz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tetherd-${{ runner.os }}-${{ runner.arch }}
           path: |
-            tetherd-*.tar.gz
-            tetherd-*.tar.gz.sha256
+            dist/tetherd-*.tar.gz
+            dist/tetherd-*.tar.gz.sha256
           if-no-files-found: error
 
   publish:
@@ -50,7 +83,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
           merge-multiple: true
