@@ -18,6 +18,8 @@ pub enum Error {
     Timeout,
     #[error("execution denied: {0}")]
     ExecutionDenied(String),
+    #[error("resource busy: {0}")]
+    Busy(String),
     #[error("invalid control request: {0}")]
     Control(String),
     #[error(transparent)]
