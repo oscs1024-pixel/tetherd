@@ -17,6 +17,7 @@ pub async fn serve(
     socket_path: PathBuf,
     state: Arc<SharedState>,
     exec_timeout: Duration,
+    output_idle_timeout: Duration,
     request_timeout: Duration,
     max_connections: usize,
     mut shutdown: watch::Receiver<bool>,
@@ -47,7 +48,14 @@ pub async fn serve(
                 let state = state.clone();
                 clients.spawn(async move {
                     let _permit = permit;
-                    handle_client(stream, state, exec_timeout, request_timeout).await
+                    handle_client(
+                        stream,
+                        state,
+                        exec_timeout,
+                        output_idle_timeout,
+                        request_timeout,
+                    )
+                    .await
                 });
             }
             joined = clients.join_next(), if !clients.is_empty() => {
@@ -76,6 +84,7 @@ async fn handle_client(
     mut stream: UnixStream,
     state: Arc<SharedState>,
     exec_timeout: Duration,
+    output_idle_timeout: Duration,
     request_timeout: Duration,
 ) -> Result<()> {
     verify_peer_uid(&stream)?;
