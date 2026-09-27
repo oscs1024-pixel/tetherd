@@ -310,9 +310,46 @@ mod tests {
     use super::{cleanup_session, PeerHandle, PendingRequest, SharedState};
     use crate::protocol::message::Message;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use std::time::Instant;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
     use tokio::sync::{mpsc, oneshot, watch};
     use uuid::Uuid;
+
+    #[tokio::test]
+    async fn saturated_peer_queue_returns_busy_without_leaking_pending_request() {
+        let state = Arc::new(SharedState::default());
+        let credential = "pair".to_string();
+        let session_id = Uuid::new_v4();
+        let (peer_tx, _peer_rx) = mpsc::channel::<Message>(1);
+        peer_tx.try_send(Message::Ping { nonce: 1 }).unwrap();
+        let (cancel_tx, _cancel_rx) = watch::channel(false);
+        state.peers.write().await.insert(
+            credential.clone(),
+            PeerHandle {
+                session_id,
+                name: "peer".into(),
+                remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1234),
+                connected_at: Instant::now(),
+                tx: peer_tx,
+                cancel: cancel_tx,
+            },
+        );
+
+        let started = Instant::now();
+        let error = state
+            .exec(
+                &credential,
+                vec!["/bin/echo".into(), "hello".into()],
+                1,
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, crate::Error::Busy(_)));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(state.pending.lock().await.is_empty());
+    }
 
     #[tokio::test]
     async fn stale_session_cleanup_does_not_remove_replacement_or_its_pending_request() {
