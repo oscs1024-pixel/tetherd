@@ -45,8 +45,10 @@ fn config_requires_exactly_one_psk_source() {
 fn config_rejects_unknown_fields() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    let raw = base_config("psk_env = \"TETHERD_TEST_PSK\"")
-        .replace("allow_exec = [\"/bin/echo\"]", "allow_exec = [\"/bin/echo\"]\ninherit_env = true");
+    let raw = base_config("psk_env = \"TETHERD_TEST_PSK\"").replace(
+        "allow_exec = [\"/bin/echo\"]",
+        "allow_exec = [\"/bin/echo\"]\ninherit_env = true",
+    );
     fs::write(&path, raw).unwrap();
     assert!(Config::load(&path).is_err());
 }
@@ -55,8 +57,10 @@ fn config_rejects_unknown_fields() {
 fn config_rejects_excessive_resource_limits() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    let raw = base_config("psk_env = \"TETHERD_TEST_PSK\"")
-        .replace("control_socket = \"/tmp/tetherd-test.sock\"", "control_socket = \"/tmp/tetherd-test.sock\"\nmax_connections = 999999");
+    let raw = base_config("psk_env = \"TETHERD_TEST_PSK\"").replace(
+        "control_socket = \"/tmp/tetherd-test.sock\"",
+        "control_socket = \"/tmp/tetherd-test.sock\"\nmax_connections = 999999",
+    );
     fs::write(&path, raw).unwrap();
     assert!(Config::load(&path).is_err());
 }
