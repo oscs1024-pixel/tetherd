@@ -2,6 +2,7 @@ pub mod cipher;
 pub mod frame;
 pub mod handshake;
 pub mod message;
+pub mod transport;
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
