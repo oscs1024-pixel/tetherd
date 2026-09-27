@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use tetherd::config::ExecConfig;
 use tetherd::join::executor::Executor;
-use tetherd::protocol::message::Message;
 use uuid::Uuid;
 
 fn config(programs: Vec<PathBuf>) -> ExecConfig {
@@ -26,12 +25,13 @@ async fn executor_denies_non_allowlisted_program() {
             1,
         )
         .await;
-    match result {
-        Message::ExecResponse {
-            error: Some(error), ..
-        } => assert!(error.contains("not allowlisted")),
-        other => panic!("unexpected response: {other:?}"),
-    }
+    assert!(
+        result
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("not allowlisted")),
+        "unexpected result: {result:?}"
+    );
 }
 
 #[tokio::test]
@@ -44,14 +44,8 @@ async fn executor_runs_argv_without_shell() {
             1,
         )
         .await;
-    match result {
-        Message::ExecResponse {
-            stdout,
-            error: None,
-            ..
-        } => assert_eq!(stdout, "hello;uname\n"),
-        other => panic!("unexpected response: {other:?}"),
-    }
+    assert_eq!(result.error, None);
+    assert_eq!(result.stdout, b"hello;uname\n");
 }
 
 #[tokio::test]
@@ -67,17 +61,9 @@ async fn executor_truncates_but_drains_output() {
             1,
         )
         .await;
-    match result {
-        Message::ExecResponse {
-            stdout,
-            truncated: true,
-            error: None,
-            ..
-        } => {
-            assert_eq!(stdout.len(), 32)
-        }
-        other => panic!("unexpected response: {other:?}"),
-    }
+    assert_eq!(result.error, None);
+    assert!(result.truncated);
+    assert_eq!(result.stdout.len(), 32);
 }
 
 #[tokio::test]
@@ -86,12 +72,7 @@ async fn executor_kills_on_timeout() {
     let result = executor
         .execute(Uuid::new_v4(), vec!["/bin/sleep".into(), "5".into()], 1)
         .await;
-    match result {
-        Message::ExecResponse {
-            timed_out: true, ..
-        } => {}
-        other => panic!("unexpected response: {other:?}"),
-    }
+    assert!(result.timed_out);
 }
 
 #[tokio::test]
@@ -114,13 +95,51 @@ async fn executor_returns_busy_instead_of_queueing_unbounded_work() {
     let second = executor
         .execute(Uuid::new_v4(), vec!["/bin/echo".into(), "busy".into()], 1)
         .await;
-    match second {
-        Message::ExecResponse {
-            error: Some(error), ..
-        } => assert!(error.contains("busy")),
-        other => panic!("unexpected response: {other:?}"),
-    }
+    assert!(
+        second
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("busy") || error.contains("capacity")),
+        "unexpected result: {second:?}"
+    );
     let _ = running.await.unwrap();
+}
+
+#[tokio::test]
+async fn executor_never_inherits_parent_environment() {
+    let executor = Executor::new(config(vec![PathBuf::from("/usr/bin/env")])).unwrap();
+    std::env::set_var("TETHERD_TEST_SECRET_DO_NOT_LEAK", "secret-value");
+    let result = executor
+        .execute(Uuid::new_v4(), vec!["/usr/bin/env".into()], 1)
+        .await;
+    std::env::remove_var("TETHERD_TEST_SECRET_DO_NOT_LEAK");
+    assert_eq!(result.error, None);
+    let output = String::from_utf8_lossy(&result.stdout);
+    assert!(!output.contains("TETHERD_TEST_SECRET_DO_NOT_LEAK"));
+    assert!(!output.contains("secret-value"));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn executor_drain_has_deadline_when_descendant_escapes_process_group() {
+    let mut cfg = config(vec![PathBuf::from("/bin/sh")]);
+    cfg.max_output_bytes = 4096;
+    cfg.drain_grace_secs = 1;
+    let executor = Executor::new(cfg).unwrap();
+    let started = std::time::Instant::now();
+    let result = executor
+        .execute(
+            Uuid::new_v4(),
+            vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "/usr/bin/setsid /bin/sh -c 'sleep 3' & exit 0".into(),
+            ],
+            2,
+        )
+        .await;
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    assert!(result.timed_out || result.error.is_some());
 }
 
 #[cfg(unix)]
@@ -141,10 +160,11 @@ async fn executor_rejects_allowlisted_symlink_after_target_changes() {
             1,
         )
         .await;
-    match result {
-        Message::ExecResponse {
-            error: Some(error), ..
-        } => assert!(error.contains("not allowlisted")),
-        other => panic!("unexpected response: {other:?}"),
-    }
+    assert!(
+        result
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("not allowlisted")),
+        "unexpected result: {result:?}"
+    );
 }
