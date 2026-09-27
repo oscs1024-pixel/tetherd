@@ -10,6 +10,7 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+use crate::daemon::output_transfer_budget;
 use crate::protocol::cipher::{read_encrypted, write_encrypted};
 use crate::protocol::handshake::server_handshake;
 use crate::protocol::message::{Message, OutputStream, PeerInfo};
@@ -194,13 +195,6 @@ async fn await_exec_response(
             }
         }
     }
-}
-
-fn output_transfer_budget(output_idle_timeout: Duration) -> Duration {
-    output_idle_timeout
-        .saturating_mul(4)
-        .max(Duration::from_secs(30))
-        .min(Duration::from_secs(300))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -471,9 +465,10 @@ fn valid_peer_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        await_exec_response, cleanup_session, output_transfer_budget, PeerHandle, PendingRequest,
+        await_exec_response, cleanup_session, PeerHandle, PendingRequest,
         SharedState, SESSION_QUEUE_CAPACITY,
     };
+    use crate::daemon::output_transfer_budget;
     use crate::protocol::message::Message;
     use crate::Error;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
