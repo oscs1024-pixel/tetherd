@@ -16,6 +16,8 @@ pub enum Error {
     PeerOffline(String),
     #[error("request timed out")]
     Timeout,
+    #[error("resource is busy: {0}")]
+    Busy(String),
     #[error("execution denied: {0}")]
     ExecutionDenied(String),
     #[error("invalid control request: {0}")]
