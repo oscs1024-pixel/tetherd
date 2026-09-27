@@ -18,6 +18,7 @@ control_timeout_secs = 30
 control_request_timeout_secs = 5
 max_control_connections = 64
 write_timeout_secs = 10
+exec_output_idle_timeout_secs = 15
 max_handshakes_per_minute = 600
 max_handshakes_per_ip_per_minute = 120
 
