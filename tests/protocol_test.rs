@@ -96,7 +96,7 @@ async fn wrong_psk_is_rejected() {
 #[test]
 fn cipher_rejects_random_malformed_authenticated_payloads() {
     let key = [0xA5u8; 32];
-    let mut rng = StdRng::seed_from_u64(0x5445_5448_4552_44);
+    let mut rng = StdRng::seed_from_u64(0x0054_4554_4845_5244);
     for _ in 0..512 {
         let mut payload = vec![0u8; 8 + 16 + 64];
         payload[..8].copy_from_slice(&0u64.to_be_bytes());
