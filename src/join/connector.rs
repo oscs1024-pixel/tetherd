@@ -158,7 +158,7 @@ async fn connect_once(
     // The read half is exclusively owned by this task after registration.
     // This avoids cancelling read_exact in the middle of a frame.
     let (incoming_tx, mut incoming_rx) = mpsc::channel::<Result<Message>>(SESSION_QUEUE_CAPACITY);
-    let mut reader_task = tokio::spawn(async move {
+    let reader_task = tokio::spawn(async move {
         loop {
             match read_encrypted::<_, Message>(&mut reader, &mut recv_cipher).await {
                 Ok(message) => {
