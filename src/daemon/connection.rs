@@ -39,12 +39,7 @@ struct PendingRequest {
 }
 
 impl PendingRequest {
-    fn push_chunk(
-        &mut self,
-        sequence: u32,
-        stream: OutputStream,
-        bytes: &[u8],
-    ) -> Result<()> {
+    fn push_chunk(&mut self, sequence: u32, stream: OutputStream, bytes: &[u8]) -> Result<()> {
         if sequence != self.next_sequence {
             return Err(Error::Protocol(format!(
                 "unexpected exec output sequence: got {sequence}, expected {}",
@@ -512,7 +507,11 @@ mod tests {
             .is_ok());
         let oversized = vec![0u8; crate::protocol::MAX_EXEC_OUTPUT_BYTES];
         assert!(pending
-            .push_chunk(1, crate::protocol::message::OutputStream::Stdout, &oversized)
+            .push_chunk(
+                1,
+                crate::protocol::message::OutputStream::Stdout,
+                &oversized
+            )
             .is_err());
     }
 

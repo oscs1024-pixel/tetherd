@@ -1,11 +1,11 @@
 use std::time::Duration;
 
+use rand::{rngs::StdRng, RngCore, SeedableRng};
 use tetherd::protocol::cipher::CipherState;
 use tetherd::protocol::cipher::{read_encrypted, write_encrypted};
 use tetherd::protocol::frame::read_raw_frame_limited;
 use tetherd::protocol::handshake::{client_handshake, server_handshake};
 use tetherd::protocol::message::Message;
-use rand::{rngs::StdRng, RngCore, SeedableRng};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 
@@ -109,10 +109,7 @@ fn cipher_rejects_random_malformed_authenticated_payloads() {
 #[tokio::test]
 async fn frame_reader_rejects_oversized_length_before_allocating_payload() {
     let (mut writer, mut reader) = tokio::io::duplex(64);
-    writer
-        .write_all(&(4097u32).to_be_bytes())
-        .await
-        .unwrap();
+    writer.write_all(&(4097u32).to_be_bytes()).await.unwrap();
     let result = read_raw_frame_limited(&mut reader, 4096).await;
     assert!(matches!(
         result,
