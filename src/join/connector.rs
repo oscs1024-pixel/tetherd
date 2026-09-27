@@ -205,14 +205,19 @@ async fn connect_once(
                             break Err(Error::Busy("join outbound queue is full".into()));
                         }
                     }
-                    Some(Ok(Message::ExecRequest { id, argv, timeout_secs })) => {
+                    Some(Ok(Message::ExecRequest {
+                        id,
+                        command,
+                        args,
+                        timeout_secs,
+                    })) => {
                         match executor.try_reserve() {
                             Ok(permit) => {
                                 let executor = executor.clone();
                                 let tx = tx.clone();
                                 tokio::spawn(async move {
                                     let result = executor
-                                        .execute_reserved(permit, id, argv, timeout_secs)
+                                        .execute_reserved(permit, id, command, args, timeout_secs)
                                         .await;
                                     let _ = send_execution_result(&tx, result).await;
                                 });
