@@ -1,5 +1,7 @@
+use std::collections::{HashMap, VecDeque};
+use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::net::TcpListener;
 use tokio::sync::{watch, Semaphore};
@@ -18,6 +20,10 @@ pub async fn run(config: Arc<Config>, mut shutdown: watch::Receiver<bool>) -> Re
 
     let state = Arc::new(SharedState::default());
     let connections = Arc::new(Semaphore::new(config.daemon.max_connections));
+    let mut limiter = HandshakeRateLimiter::new(
+        config.daemon.max_handshakes_per_minute,
+        config.daemon.max_handshakes_per_minute_per_ip,
+    );
     let mut sessions = JoinSet::new();
     let mut control_task = tokio::spawn(control::serve(
         config.daemon.control_socket.clone(),
@@ -35,11 +41,18 @@ pub async fn run(config: Arc<Config>, mut shutdown: watch::Receiver<bool>) -> Re
                     Ok(value) => value,
                     Err(err) => break Err(err.into()),
                 };
+
+                if !limiter.allow(remote_addr.ip(), Instant::now()) {
+                    log::warn!("handshake rate limit reached remote_ip={}", remote_addr.ip());
+                    drop(stream);
+                    continue;
+                }
+
                 if let Err(err) = stream.set_nodelay(true) {
                     log::warn!("failed to configure peer socket remote={} error={err}", remote_addr);
                     continue;
                 }
-                log::info!("peer connected addr={remote_addr}");
+
                 let permit = match connections.clone().try_acquire_owned() {
                     Ok(permit) => permit,
                     Err(_) => {
@@ -48,11 +61,14 @@ pub async fn run(config: Arc<Config>, mut shutdown: watch::Receiver<bool>) -> Re
                         continue;
                     }
                 };
+
+                log::info!("peer connected addr={remote_addr}");
                 let psk = psk.clone();
                 let state = state.clone();
                 let credential = config.auth.credential.clone();
                 let heartbeat_timeout = config.heartbeat_timeout();
                 let handshake_timeout = Duration::from_secs(config.daemon.handshake_timeout_secs);
+                let write_timeout = Duration::from_secs(config.daemon.write_timeout_secs);
                 sessions.spawn(async move {
                     let _permit = permit;
                     serve(
@@ -62,6 +78,7 @@ pub async fn run(config: Arc<Config>, mut shutdown: watch::Receiver<bool>) -> Re
                         credential,
                         heartbeat_timeout,
                         handshake_timeout,
+                        write_timeout,
                         state,
                     )
                     .await
@@ -100,6 +117,79 @@ pub async fn run(config: Arc<Config>, mut shutdown: watch::Receiver<bool>) -> Re
     if !control_task.is_finished() {
         control_task.abort();
     }
+    let _ = control_task.await;
     log::info!("daemon stopped");
     loop_result
+}
+
+struct HandshakeRateLimiter {
+    global_limit: usize,
+    per_ip_limit: usize,
+    global: VecDeque<Instant>,
+    per_ip: HashMap<IpAddr, VecDeque<Instant>>,
+}
+
+impl HandshakeRateLimiter {
+    fn new(global_limit: u32, per_ip_limit: u32) -> Self {
+        Self {
+            global_limit: global_limit as usize,
+            per_ip_limit: per_ip_limit as usize,
+            global: VecDeque::new(),
+            per_ip: HashMap::new(),
+        }
+    }
+
+    fn allow(&mut self, ip: IpAddr, now: Instant) -> bool {
+        const WINDOW: Duration = Duration::from_secs(60);
+        let cutoff = now.checked_sub(WINDOW).unwrap_or(now);
+
+        while self.global.front().is_some_and(|time| *time <= cutoff) {
+            self.global.pop_front();
+        }
+
+        let bucket = self.per_ip.entry(ip).or_default();
+        while bucket.front().is_some_and(|time| *time <= cutoff) {
+            bucket.pop_front();
+        }
+
+        if self.global.len() >= self.global_limit || bucket.len() >= self.per_ip_limit {
+            return false;
+        }
+
+        self.global.push_back(now);
+        bucket.push_back(now);
+
+        if self.per_ip.len() > 4096 {
+            self.per_ip.retain(|_, entries| {
+                while entries.front().is_some_and(|time| *time <= cutoff) {
+                    entries.pop_front();
+                }
+                !entries.is_empty()
+            });
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HandshakeRateLimiter;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn rate_limiter_bounds_global_and_per_ip_attempts() {
+        let mut limiter = HandshakeRateLimiter::new(3, 2);
+        let now = Instant::now();
+        let a = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+        let b = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2));
+
+        assert!(limiter.allow(a, now));
+        assert!(limiter.allow(a, now));
+        assert!(!limiter.allow(a, now));
+        assert!(limiter.allow(b, now));
+        assert!(!limiter.allow(b, now));
+
+        assert!(limiter.allow(a, now + Duration::from_secs(61)));
+    }
 }
