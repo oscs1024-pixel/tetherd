@@ -14,8 +14,19 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
 use crate::config::{CommandConfig, ExecConfig};
-use crate::protocol::message::Message;
 use crate::{Error, Result};
+
+#[derive(Debug)]
+pub struct ExecutionOutcome {
+    pub id: Uuid,
+    pub exit_code: Option<i32>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub truncated: bool,
+    pub timed_out: bool,
+    pub elapsed_ms: u64,
+    pub error: Option<String>,
+}
 
 #[derive(Clone)]
 pub struct Executor {
@@ -87,7 +98,7 @@ impl Executor {
         command: String,
         args: Vec<String>,
         timeout_secs: u64,
-    ) -> Message {
+    ) -> ExecutionOutcome {
         match self.try_reserve() {
             Ok(permit) => {
                 self.execute_reserved(id, command, args, timeout_secs, permit)
@@ -104,13 +115,13 @@ impl Executor {
         args: Vec<String>,
         timeout_secs: u64,
         permit: OwnedSemaphorePermit,
-    ) -> Message {
+    ) -> ExecutionOutcome {
         let started = Instant::now();
         match self
             .execute_inner(&command, args, timeout_secs, permit)
             .await
         {
-            Ok((exit_code, stdout, stderr, truncated, timed_out)) => Message::ExecResponse {
+            Ok((exit_code, stdout, stderr, truncated, timed_out)) => ExecutionOutcome {
                 id,
                 exit_code,
                 stdout,
@@ -130,7 +141,7 @@ impl Executor {
         extra_args: Vec<String>,
         requested_timeout_secs: u64,
         _permit: OwnedSemaphorePermit,
-    ) -> Result<(Option<i32>, String, String, bool, bool)> {
+    ) -> Result<(Option<i32>, Vec<u8>, Vec<u8>, bool, bool)> {
         let profile = self.commands.get(command_name).ok_or_else(|| {
             Error::ExecutionDenied(format!("unknown command profile: {command_name}"))
         })?;
@@ -225,8 +236,8 @@ impl Executor {
         process_group.disarm();
         Ok((
             status.and_then(|s| s.code()),
-            String::from_utf8_lossy(&stdout_bytes).into_owned(),
-            String::from_utf8_lossy(&stderr_bytes).into_owned(),
+            stdout_bytes,
+            stderr_bytes,
             stdout_truncated || stderr_truncated,
             timed_out,
         ))
@@ -286,12 +297,12 @@ fn validate_extra_args(profile: &PreparedCommand, args: &[String]) -> Result<()>
     Ok(())
 }
 
-fn error_response(id: Uuid, started: Instant, error: Error) -> Message {
-    Message::ExecResponse {
+fn error_response(id: Uuid, started: Instant, error: Error) -> ExecutionOutcome {
+    ExecutionOutcome {
         id,
         exit_code: None,
-        stdout: String::new(),
-        stderr: String::new(),
+        stdout: Vec::new(),
+        stderr: Vec::new(),
         truncated: false,
         timed_out: matches!(error, Error::Timeout),
         elapsed_ms: elapsed_ms(started),
