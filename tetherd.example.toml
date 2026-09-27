@@ -4,7 +4,9 @@ color = "auto"
 
 [auth]
 credential = "pair"
-# Exactly one PSK source is required. The file must be owner-only (0600) on Unix.
+# Exactly one PSK source is required. Prefer a 0600 file owned by root or the
+# tetherd service account. Environment-backed PSKs are supported but never
+# propagated to child commands.
 psk_file = "/etc/tetherd/psk"
 # psk_env = "TETHERD_PSK"
 
@@ -13,10 +15,13 @@ listen = "0.0.0.0:1234"
 control_socket = "/run/tetherd/tetherd.sock"
 heartbeat_timeout_secs = 180
 handshake_timeout_secs = 10
+write_timeout_secs = 10
 max_connections = 128
 control_timeout_secs = 30
 control_request_timeout_secs = 5
 max_control_connections = 64
+max_handshakes_per_minute = 1200
+max_handshakes_per_minute_per_ip = 120
 
 [join]
 server = "203.0.113.10:1234"
@@ -24,14 +29,34 @@ name = "alice"
 heartbeat_secs = 60
 heartbeat_timeout_secs = 180
 reconnect_secs = 5
+reconnect_max_secs = 300
+auth_failure_backoff_secs = 60
 connect_timeout_secs = 10
+write_timeout_secs = 10
 
 [exec]
-# argv[0] must exactly match one of these absolute paths. No shell is inserted.
-allow_exec = ["/bin/echo", "/usr/bin/uptime"]
 max_timeout_secs = 30
 max_output_bytes = 1048576
 max_concurrent = 4
-# Default false: child receives an empty environment.
-inherit_env = false
+output_drain_timeout_secs = 2
 # work_dir = "/var/empty"
+
+# Child environments are always cleared first. Only these literal values are
+# added. The configured PSK environment variable may not appear here.
+[exec.env]
+LANG = "C"
+
+# Remote execution uses named profiles, not arbitrary executable paths.
+# Executables and all parent directories must be root-owned and not
+# group/world writable. Extra arguments are denied unless explicitly enabled.
+[exec.commands.echo]
+program = "/bin/echo"
+allow_extra_args = true
+max_extra_args = 8
+timeout_secs = 5
+
+[exec.commands.uptime]
+program = "/usr/bin/uptime"
+allow_extra_args = false
+max_extra_args = 0
+timeout_secs = 5
