@@ -80,11 +80,8 @@ async fn command_profile_denies_extra_args_by_default() {
 
 #[tokio::test]
 async fn executor_runs_allowed_args_without_shell() {
-    let executor = Executor::new(config(vec![(
-        "echo",
-        profile("/bin/echo", &[], true, 4),
-    )]))
-    .unwrap();
+    let executor =
+        Executor::new(config(vec![("echo", profile("/bin/echo", &[], true, 4))])).unwrap();
     let result = executor
         .execute(Uuid::new_v4(), "echo".into(), vec!["hello;uname".into()], 1)
         .await;
