@@ -224,3 +224,30 @@ impl Drop for SocketCleanup {
         let _ = fs::remove_file(&self.0);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::prepare_socket_path;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::tempdir;
+
+    #[test]
+    fn control_socket_rejects_group_or_world_writable_parent() {
+        let dir = tempdir().unwrap();
+        let unsafe_parent = dir.path().join("unsafe");
+        fs::create_dir(&unsafe_parent).unwrap();
+        fs::set_permissions(&unsafe_parent, fs::Permissions::from_mode(0o777)).unwrap();
+        let socket = unsafe_parent.join("tetherd.sock");
+        assert!(prepare_socket_path(&socket).is_err());
+    }
+
+    #[test]
+    fn control_socket_refuses_to_replace_non_socket_file() {
+        let dir = tempdir().unwrap();
+        let socket = dir.path().join("tetherd.sock");
+        fs::write(&socket, b"do-not-delete").unwrap();
+        assert!(prepare_socket_path(&socket).is_err());
+        assert_eq!(fs::read(&socket).unwrap(), b"do-not-delete");
+    }
+}
