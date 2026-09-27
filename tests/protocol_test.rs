@@ -3,9 +3,10 @@ use std::time::Duration;
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 use tetherd::protocol::cipher::CipherState;
 use tetherd::protocol::cipher::{read_encrypted, write_encrypted};
-use tetherd::protocol::frame::read_raw_frame_limited;
+use tetherd::protocol::frame::{read_raw_frame_limited, write_raw_frame_limited};
 use tetherd::protocol::handshake::{client_handshake, server_handshake};
 use tetherd::protocol::message::Message;
+use tetherd::protocol::MAX_PEER_FRAME_BYTES;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 
@@ -127,4 +128,36 @@ async fn frame_reader_rejects_truncated_payload() {
     writer.write_all(b"abc").await.unwrap();
     writer.shutdown().await.unwrap();
     assert!(read_raw_frame_limited(&mut reader, 64).await.is_err());
+}
+
+#[tokio::test]
+async fn frame_writer_rejects_payload_above_explicit_limit() {
+    let (mut writer, _reader) = tokio::io::duplex(64);
+    let payload = vec![0u8; 65];
+    let result = write_raw_frame_limited(&mut writer, &payload, 64).await;
+    assert!(matches!(
+        result,
+        Err(tetherd::Error::FrameTooLarge {
+            actual: 65,
+            limit: 64
+        })
+    ));
+}
+
+#[tokio::test]
+async fn encrypted_peer_reader_rejects_frame_above_peer_ceiling_before_payload_read() {
+    let (mut writer, mut reader) = tokio::io::duplex(64);
+    let oversized = u32::try_from(MAX_PEER_FRAME_BYTES + 1).unwrap();
+    writer.write_all(&oversized.to_be_bytes()).await.unwrap();
+
+    let key = [0x5au8; 32];
+    let mut cipher = CipherState::new(&key, *b"TEST");
+    let result: tetherd::Result<Message> = read_encrypted(&mut reader, &mut cipher).await;
+    assert!(matches!(
+        result,
+        Err(tetherd::Error::FrameTooLarge {
+            actual,
+            limit: MAX_PEER_FRAME_BYTES
+        }) if actual == MAX_PEER_FRAME_BYTES + 1
+    ));
 }
