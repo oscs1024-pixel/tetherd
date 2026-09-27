@@ -1,3 +1,5 @@
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use rand::Rng;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -6,10 +8,10 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 
 use crate::config::Config;
-use crate::join::executor::Executor;
+use crate::join::executor::{ExecutionOutcome, Executor};
 use crate::protocol::cipher::{read_encrypted, write_encrypted};
 use crate::protocol::handshake::client_handshake;
-use crate::protocol::message::Message;
+use crate::protocol::message::{Message, OutputStream};
 use crate::protocol::transport::{spawn_message_transport, stop_transport};
 use crate::{Error, Result};
 
@@ -140,7 +142,7 @@ async fn connect_once(
     );
 
     let mut transport = spawn_message_transport(channel, write_timeout, SESSION_QUEUE_CAPACITY);
-    let mut exec_tasks = JoinSet::<Message>::new();
+    let mut exec_tasks = JoinSet::<Result<()>>::new();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(config.join.heartbeat_secs));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut watchdog = tokio::time::interval(Duration::from_secs(1));
@@ -159,7 +161,7 @@ async fn connect_once(
                     Message::Pong { .. } => last_pong = Instant::now(),
                     Message::Ping { nonce } => {
                         if let Err(err) = try_send_message(
-                            &transport.outgoing,
+                            &transport.priority_outgoing,
                             Message::Pong { nonce },
                         ) {
                             break Err(err);
@@ -174,18 +176,18 @@ async fn connect_once(
                         match executor.try_reserve() {
                             Ok(permit) => {
                                 let executor = executor.clone();
+                                let sender = transport.outgoing.clone();
                                 exec_tasks.spawn(async move {
-                                    executor
+                                    let outcome = executor
                                         .execute_reserved(id, command, args, timeout_secs, permit)
-                                        .await
+                                        .await;
+                                    send_execution_outcome(&sender, outcome).await
                                 });
                             }
                             Err(error) => {
-                                let response = Message::ExecResponse {
+                                let response = Message::ExecFinished {
                                     id,
                                     exit_code: None,
-                                    stdout: String::new(),
-                                    stderr: String::new(),
                                     truncated: false,
                                     timed_out: false,
                                     elapsed_ms: 0,
@@ -202,11 +204,8 @@ async fn connect_once(
             }
             completed = exec_tasks.join_next(), if !exec_tasks.is_empty() => {
                 match completed {
-                    Some(Ok(response)) => {
-                        if let Err(err) = try_send_message(&transport.outgoing, response) {
-                            break Err(err);
-                        }
-                    }
+                    Some(Ok(Ok(()))) => {}
+                    Some(Ok(Err(err))) => break Err(err),
                     Some(Err(err)) if err.is_cancelled() => {}
                     Some(Err(err)) => {
                         break Err(Error::Protocol(format!("executor task failed: {err}")));
@@ -217,7 +216,7 @@ async fn connect_once(
             _ = heartbeat.tick() => {
                 nonce = nonce.wrapping_add(1);
                 if let Err(err) = try_send_message(
-                    &transport.outgoing,
+                    &transport.priority_outgoing,
                     Message::Ping { nonce },
                 ) {
                     break Err(err);
@@ -306,4 +305,44 @@ auth_failure_backoff_secs = 20
         assert!(auth <= std::time::Duration::from_secs(20));
         assert!(auth >= std::time::Duration::from_millis(250));
     }
+}
+
+const EXEC_OUTPUT_CHUNK_BYTES: usize = 48 * 1024;
+
+async fn send_execution_outcome(
+    sender: &mpsc::Sender<Message>,
+    outcome: ExecutionOutcome,
+) -> Result<()> {
+    for chunk in outcome.stdout.chunks(EXEC_OUTPUT_CHUNK_BYTES) {
+        sender
+            .send(Message::ExecOutput {
+                id: outcome.id,
+                stream: OutputStream::Stdout,
+                data_b64: STANDARD.encode(chunk),
+            })
+            .await
+            .map_err(|_| Error::Disconnected)?;
+    }
+    for chunk in outcome.stderr.chunks(EXEC_OUTPUT_CHUNK_BYTES) {
+        sender
+            .send(Message::ExecOutput {
+                id: outcome.id,
+                stream: OutputStream::Stderr,
+                data_b64: STANDARD.encode(chunk),
+            })
+            .await
+            .map_err(|_| Error::Disconnected)?;
+    }
+    sender
+        .send(Message::ExecFinished {
+            id: outcome.id,
+            exit_code: outcome.exit_code,
+            truncated: outcome.truncated,
+            timed_out: outcome.timed_out,
+            elapsed_ms: outcome.elapsed_ms,
+            error: outcome.error,
+        })
+        .await
+        .map_err(|_| Error::Disconnected)?;
+    Ok(())
 }
