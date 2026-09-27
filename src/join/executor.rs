@@ -14,7 +14,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use crate::config::ExecConfig;
+use crate::config::{CommandProfile, ExecConfig};
 use crate::{Error, Result};
 
 #[derive(Debug)]
@@ -32,8 +32,18 @@ pub struct ExecutionResult {
 #[derive(Clone)]
 pub struct Executor {
     config: Arc<ExecConfig>,
-    allowed: Arc<HashMap<PathBuf, ExecutableIdentity>>,
+    commands: Arc<HashMap<String, ResolvedCommand>>,
     semaphore: Arc<Semaphore>,
+}
+
+#[derive(Clone)]
+struct ResolvedCommand {
+    program: PathBuf,
+    identity: ExecutableIdentity,
+    fixed_args: Vec<String>,
+    allow_user_args: bool,
+    max_user_args: usize,
+    max_user_arg_bytes: usize,
 }
 
 #[derive(Clone)]
@@ -48,22 +58,13 @@ struct ExecutableIdentity {
 impl Executor {
     pub fn new(config: ExecConfig) -> Result<Self> {
         let max = config.max_concurrent;
-        let mut allowed = HashMap::with_capacity(config.allow_exec.len());
-        for program in &config.allow_exec {
-            let canonical = std::fs::canonicalize(program).map_err(|err| {
-                Error::Config(format!(
-                    "failed to resolve allowlisted executable {}: {err}",
-                    program.display()
-                ))
-            })?;
-            validate_executable(&canonical)?;
-            validate_trusted_executable_path(&canonical)?;
-            let identity = executable_identity(&canonical)?;
-            allowed.insert(canonical, identity);
+        let mut commands = HashMap::with_capacity(config.commands.len());
+        for (name, profile) in &config.commands {
+            commands.insert(name.clone(), resolve_profile(name, profile)?);
         }
         Ok(Self {
             config: Arc::new(config),
-            allowed: Arc::new(allowed),
+            commands: Arc::new(commands),
             semaphore: Arc::new(Semaphore::new(max)),
         })
     }
@@ -78,25 +79,28 @@ impl Executor {
     pub async fn execute(
         &self,
         id: Uuid,
-        argv: Vec<String>,
+        command_id: String,
+        args: Vec<String>,
         timeout_secs: u64,
     ) -> ExecutionResult {
         let permit = match self.try_reserve() {
             Ok(permit) => permit,
             Err(error) => return error_result(id, error, Instant::now()),
         };
-        self.execute_reserved(permit, id, argv, timeout_secs).await
+        self.execute_reserved(permit, id, command_id, args, timeout_secs)
+            .await
     }
 
     pub async fn execute_reserved(
         &self,
         _permit: OwnedSemaphorePermit,
         id: Uuid,
-        argv: Vec<String>,
+        command_id: String,
+        args: Vec<String>,
         timeout_secs: u64,
     ) -> ExecutionResult {
         let started = Instant::now();
-        match self.execute_inner(argv, timeout_secs).await {
+        match self.execute_inner(&command_id, args, timeout_secs).await {
             Ok((exit_code, stdout, stderr, truncated, timed_out)) => ExecutionResult {
                 id,
                 exit_code,
@@ -113,56 +117,48 @@ impl Executor {
 
     async fn execute_inner(
         &self,
-        argv: Vec<String>,
+        command_id: &str,
+        user_args: Vec<String>,
         requested_timeout_secs: u64,
     ) -> Result<(Option<i32>, Vec<u8>, Vec<u8>, bool, bool)> {
-        validate_argv(&argv)?;
+        let profile = self.commands.get(command_id).ok_or_else(|| {
+            Error::ExecutionDenied(format!("unknown command profile: {command_id}"))
+        })?;
+        validate_user_args(profile, &user_args)?;
 
-        let requested_program = Path::new(&argv[0]);
-        let canonical_program = std::fs::canonicalize(requested_program).map_err(|_| {
-            Error::ExecutionDenied(format!(
-                "executable is not available: {}",
-                requested_program.display()
-            ))
-        })?;
-        let expected_identity = self.allowed.get(&canonical_program).ok_or_else(|| {
-            Error::ExecutionDenied(format!(
-                "executable is not allowlisted: {}",
-                requested_program.display()
-            ))
-        })?;
-        validate_executable(&canonical_program)?;
-        validate_trusted_executable_path(&canonical_program)?;
-        let current_identity = executable_identity(&canonical_program)?;
-        if !same_identity(expected_identity, &current_identity) {
+        validate_executable(&profile.program)?;
+        validate_trusted_executable_path(&profile.program)?;
+        let current_identity = executable_identity(&profile.program)?;
+        if !same_identity(&profile.identity, &current_identity) {
             return Err(Error::ExecutionDenied(format!(
-                "allowlisted executable changed since startup: {}",
-                canonical_program.display()
+                "command profile executable changed since startup: {command_id}"
             )));
         }
 
         let timeout_secs = requested_timeout_secs.clamp(1, self.config.max_timeout_secs);
         let drain_grace = Duration::from_secs(self.config.drain_grace_secs);
 
-        let mut command = Command::new(&canonical_program);
-        command.args(&argv[1..]);
+        let mut command = Command::new(&profile.program);
+        command.args(&profile.fixed_args);
+        command.args(&user_args);
         command.stdin(Stdio::null());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
         command.kill_on_drop(true);
         #[cfg(unix)]
         command.as_std_mut().process_group(0);
-        // Deliberately never inherit the daemon environment. In particular this
-        // prevents auth.psk_env from leaking into allowlisted child processes.
+        // Never inherit the service environment. This prevents PSK or other
+        // daemon secrets from entering child processes.
         command.env_clear();
         if let Some(work_dir) = &self.config.work_dir {
             command.current_dir(work_dir);
         }
 
         log::info!(
-            "command starting program={} argc={} timeout={}s",
-            canonical_program.display(),
-            argv.len().saturating_sub(1),
+            "command starting profile={} program={} user_argc={} timeout={}s",
+            command_id,
+            profile.program.display(),
+            user_args.len(),
             timeout_secs
         );
 
@@ -208,6 +204,57 @@ impl Executor {
     }
 }
 
+fn resolve_profile(name: &str, profile: &CommandProfile) -> Result<ResolvedCommand> {
+    let canonical = std::fs::canonicalize(&profile.program).map_err(|err| {
+        Error::Config(format!(
+            "failed to resolve exec.commands.{name}.program {}: {err}",
+            profile.program.display()
+        ))
+    })?;
+    validate_executable(&canonical)?;
+    validate_trusted_executable_path(&canonical)?;
+    Ok(ResolvedCommand {
+        identity: executable_identity(&canonical)?,
+        program: canonical,
+        fixed_args: profile.fixed_args.clone(),
+        allow_user_args: profile.allow_user_args,
+        max_user_args: profile.max_user_args,
+        max_user_arg_bytes: profile.max_user_arg_bytes,
+    })
+}
+
+fn validate_user_args(profile: &ResolvedCommand, args: &[String]) -> Result<()> {
+    if !profile.allow_user_args && !args.is_empty() {
+        return Err(Error::ExecutionDenied(
+            "command profile does not accept user arguments".into(),
+        ));
+    }
+    if args.len() > profile.max_user_args {
+        return Err(Error::ExecutionDenied("too many user arguments".into()));
+    }
+    let total = args.iter().try_fold(0usize, |total, arg| {
+        if arg.as_bytes().contains(&0) || arg.chars().any(char::is_control) {
+            return Err(Error::ExecutionDenied(
+                "user arguments must not contain NUL/control characters".into(),
+            ));
+        }
+        if arg.len() > profile.max_user_arg_bytes {
+            return Err(Error::ExecutionDenied(
+                "individual user argument exceeds profile byte limit".into(),
+            ));
+        }
+        total
+            .checked_add(arg.len())
+            .ok_or_else(|| Error::ExecutionDenied("combined argument size overflow".into()))
+    })?;
+    if total > profile.max_user_arg_bytes {
+        return Err(Error::ExecutionDenied(
+            "combined user arguments exceed profile byte limit".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn error_result(id: Uuid, error: Error, started: Instant) -> ExecutionResult {
     ExecutionResult {
         id,
@@ -221,57 +268,23 @@ fn error_result(id: Uuid, error: Error, started: Instant) -> ExecutionResult {
     }
 }
 
-fn validate_argv(argv: &[String]) -> Result<()> {
-    if argv.is_empty() {
-        return Err(Error::ExecutionDenied("argv must not be empty".into()));
-    }
-    if argv.len() > 128 {
-        return Err(Error::ExecutionDenied("too many arguments".into()));
-    }
-    if argv.iter().any(|arg| arg.as_bytes().contains(&0)) {
-        return Err(Error::ExecutionDenied(
-            "argv must not contain NUL bytes".into(),
-        ));
-    }
-    if argv.iter().any(|arg| arg.len() > 64 * 1024) {
-        return Err(Error::ExecutionDenied("argument exceeds 64 KiB".into()));
-    }
-    let total_arg_bytes = argv.iter().try_fold(0usize, |total, arg| {
-        total
-            .checked_add(arg.len())
-            .ok_or_else(|| Error::ExecutionDenied("combined argv size overflow".into()))
-    })?;
-    if total_arg_bytes > 256 * 1024 {
-        return Err(Error::ExecutionDenied(
-            "combined argv exceeds 256 KiB".into(),
-        ));
-    }
-    let program = Path::new(&argv[0]);
-    if !program.is_absolute() {
-        return Err(Error::ExecutionDenied(
-            "argv[0] must be an absolute executable path".into(),
-        ));
-    }
-    Ok(())
-}
-
 fn validate_executable(path: &Path) -> Result<()> {
     let metadata = std::fs::metadata(path).map_err(|err| {
         Error::Config(format!(
-            "failed to inspect allowlisted executable {}: {err}",
+            "failed to inspect command profile executable {}: {err}",
             path.display()
         ))
     })?;
     if !metadata.is_file() {
         return Err(Error::Config(format!(
-            "allowlisted executable is not a regular file: {}",
+            "command profile executable is not a regular file: {}",
             path.display()
         )));
     }
     #[cfg(unix)]
     if metadata.permissions().mode() & 0o111 == 0 {
         return Err(Error::Config(format!(
-            "allowlisted executable is not executable: {}",
+            "command profile executable is not executable: {}",
             path.display()
         )));
     }
@@ -285,13 +298,13 @@ fn validate_trusted_executable_path(path: &Path) -> Result<()> {
     let mode = metadata.permissions().mode() & 0o777;
     if metadata.uid() != 0 && metadata.uid() != euid {
         return Err(Error::Config(format!(
-            "allowlisted executable must be owned by root or the service UID: {}",
+            "command profile executable must be owned by root or the service UID: {}",
             path.display()
         )));
     }
     if mode & 0o022 != 0 || (metadata.uid() == euid && euid != 0 && mode & 0o200 != 0) {
         return Err(Error::Config(format!(
-            "allowlisted executable is mutable by an untrusted/service identity: {} mode={mode:o}",
+            "command profile executable is mutable by an untrusted/service identity: {} mode={mode:o}",
             path.display()
         )));
     }
@@ -302,13 +315,13 @@ fn validate_trusted_executable_path(path: &Path) -> Result<()> {
         let mode = metadata.permissions().mode() & 0o777;
         if metadata.uid() != 0 && metadata.uid() != euid {
             return Err(Error::Config(format!(
-                "allowlisted executable parent has an untrusted owner: {}",
+                "command profile executable parent has an untrusted owner: {}",
                 dir.display()
             )));
         }
         if mode & 0o022 != 0 || (metadata.uid() == euid && euid != 0 && mode & 0o200 != 0) {
             return Err(Error::Config(format!(
-                "allowlisted executable parent is mutable by an untrusted/service identity: {} mode={mode:o}",
+                "command profile executable parent is mutable by an untrusted/service identity: {} mode={mode:o}",
                 dir.display()
             )));
         }
@@ -358,7 +371,9 @@ async fn finish_drain(
     stream_name: &str,
 ) -> Result<(Vec<u8>, bool)> {
     match tokio::time::timeout(grace, &mut task).await {
-        Ok(result) => result.map_err(|_| Error::Protocol(format!("{stream_name} drain task failed")))?,
+        Ok(result) => {
+            result.map_err(|_| Error::Protocol(format!("{stream_name} drain task failed")))?
+        }
         Err(_) => {
             task.abort();
             let _ = task.await;
