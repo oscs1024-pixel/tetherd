@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: release build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked --release
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="tetherd-${RUNNER_OS,,}-${RUNNER_ARCH,,}"
+          mkdir -p dist
+          cp target/release/tetherd dist/tetherd
+          cp README.md LICENSE SECURITY.md tetherd.example.toml dist/
+          tar -C dist -czf "${name}.tar.gz" .
+          shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tetherd-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            tetherd-*.tar.gz
+            tetherd-*.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    name: publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" artifacts/* --generate-notes --verify-tag
