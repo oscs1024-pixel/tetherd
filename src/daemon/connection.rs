@@ -184,7 +184,7 @@ pub async fn serve(
     // never recreated inside a select! loop, so a partial read_exact cannot
     // be cancelled and restarted at a different framing offset.
     let (incoming_tx, mut incoming_rx) = mpsc::channel::<Result<Message>>(SESSION_QUEUE_CAPACITY);
-    let mut reader_task = tokio::spawn(async move {
+    let reader_task = tokio::spawn(async move {
         loop {
             match read_encrypted::<_, Message>(&mut reader, &mut recv_cipher).await {
                 Ok(message) => {
