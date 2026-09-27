@@ -75,9 +75,10 @@ async fn real_main() -> Result<i32> {
                 ),
                 CtlAction::Exec {
                     credential,
+                    command,
                     timeout,
                     json,
-                    argv,
+                    args,
                 } => {
                     let remote_timeout = timeout
                         .unwrap_or(config.daemon.control_timeout_secs)
@@ -85,7 +86,8 @@ async fn real_main() -> Result<i32> {
                     (
                         ControlRequest::Exec {
                             credential,
-                            argv,
+                            command,
+                            args,
                             timeout_secs: timeout,
                         },
                         json,
