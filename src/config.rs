@@ -315,7 +315,7 @@ fn default_connect_timeout_secs() -> u64 {
 #[serde(deny_unknown_fields)]
 pub struct ExecConfig {
     #[serde(default)]
-    pub allow_exec: Vec<PathBuf>,
+    pub commands: BTreeMap<String, CommandConfig>,
     #[serde(default = "default_exec_timeout_secs")]
     pub max_timeout_secs: u64,
     #[serde(default = "default_output_limit")]
@@ -330,10 +330,23 @@ pub struct ExecConfig {
     pub env: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandConfig {
+    pub program: PathBuf,
+    #[serde(default)]
+    pub fixed_args: Vec<String>,
+    #[serde(default)]
+    pub allow_extra_args: bool,
+    #[serde(default)]
+    pub max_extra_args: usize,
+    pub timeout_secs: Option<u64>,
+}
+
 impl Default for ExecConfig {
     fn default() -> Self {
         Self {
-            allow_exec: Vec::new(),
+            commands: BTreeMap::new(),
             max_timeout_secs: default_exec_timeout_secs(),
             max_output_bytes: default_output_limit(),
             max_concurrent: default_max_concurrent(),
@@ -529,21 +542,44 @@ impl Config {
             }
         }
 
-        for executable in &self.exec.allow_exec {
-            if !executable.is_absolute() {
+        for (command_name, command) in &self.exec.commands {
+            validate_identifier("exec command name", command_name)?;
+            if !command.program.is_absolute() {
                 return Err(Error::Config(format!(
-                    "exec allowlist entry must be an absolute path: {}",
-                    executable.display()
+                    "exec command program must be an absolute path: {}",
+                    command.program.display()
                 )));
             }
-            if executable
+            if command
+                .program
                 .to_string_lossy()
                 .chars()
                 .any(|ch| ch.is_control())
             {
                 return Err(Error::Config(
-                    "exec allowlist paths must not contain control characters".into(),
+                    "exec command paths must not contain control characters".into(),
                 ));
+            }
+            validate_args("exec fixed_args", &command.fixed_args)?;
+            if command.allow_extra_args {
+                validate_usize_range(
+                    "exec command max_extra_args",
+                    command.max_extra_args,
+                    1,
+                    128,
+                )?;
+            } else if command.max_extra_args != 0 {
+                return Err(Error::Config(
+                    "max_extra_args must be 0 when allow_extra_args is false".into(),
+                ));
+            }
+            if let Some(timeout_secs) = command.timeout_secs {
+                validate_u64_range(
+                    "exec command timeout_secs",
+                    timeout_secs,
+                    1,
+                    self.exec.max_timeout_secs,
+                )?;
             }
         }
 
@@ -621,6 +657,25 @@ fn validate_usize_range(field: &str, value: usize, min: usize, max: usize) -> Re
         return Err(Error::Config(format!(
             "{field} must be in the range {min}..={max}"
         )));
+    }
+    Ok(())
+}
+
+fn validate_args(field: &str, args: &[String]) -> Result<()> {
+    if args.len() > 128 {
+        return Err(Error::Config(format!("{field} contains too many arguments")));
+    }
+    let mut total = 0usize;
+    for arg in args {
+        if arg.as_bytes().contains(&0) || arg.len() > 64 * 1024 {
+            return Err(Error::Config(format!("{field} contains an invalid argument")));
+        }
+        total = total
+            .checked_add(arg.len())
+            .ok_or_else(|| Error::Config(format!("{field} size overflow")))?;
+    }
+    if total > 256 * 1024 {
+        return Err(Error::Config(format!("{field} exceeds 256 KiB")));
     }
     Ok(())
 }
