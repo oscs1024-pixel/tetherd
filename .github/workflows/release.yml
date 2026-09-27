@@ -63,6 +63,7 @@ jobs:
           cp target/release/tetherd dist/package/tetherd
           cp README.md LICENSE SECURITY.md tetherd.example.toml Cargo.lock dist/package/
           cargo metadata --locked --format-version=1 > dist/package/cargo-metadata.json
+          python3 scripts/generate-cyclonedx.py dist/package/cargo-metadata.json dist/package/sbom.cdx.json
           tar -C dist/package -czf "dist/${name}.tar.gz" .
           shasum -a 256 "dist/${name}.tar.gz" > "dist/${name}.tar.gz.sha256"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
