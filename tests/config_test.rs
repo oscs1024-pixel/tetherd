@@ -21,7 +21,12 @@ heartbeat_timeout_secs = 3
 reconnect_secs = 1
 
 [exec]
-allow_exec = ["/bin/echo"]
+max_concurrent = 2
+
+[exec.commands.echo]
+program = "/bin/echo"
+allow_extra_args = true
+max_extra_args = 4
 "#
     )
 }
@@ -45,10 +50,8 @@ fn config_requires_exactly_one_psk_source() {
 fn config_rejects_unknown_fields() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    let raw = base_config("psk_env = \"TETHERD_TEST_PSK\"").replace(
-        "allow_exec = [\"/bin/echo\"]",
-        "allow_exec = [\"/bin/echo\"]\ninherit_env = true",
-    );
+    let raw = base_config("psk_env = \"TETHERD_TEST_PSK\"")
+        .replace("[exec]\n", "[exec]\ninherit_env = true\n");
     fs::write(&path, raw).unwrap();
     assert!(Config::load(&path).is_err());
 }
@@ -61,6 +64,16 @@ fn config_rejects_excessive_resource_limits() {
         "control_socket = \"/tmp/tetherd-test.sock\"",
         "control_socket = \"/tmp/tetherd-test.sock\"\nmax_connections = 999999",
     );
+    fs::write(&path, raw).unwrap();
+    assert!(Config::load(&path).is_err());
+}
+
+#[test]
+fn config_rejects_invalid_command_profile_extra_arg_policy() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let raw = base_config("psk_env = \"TETHERD_TEST_PSK\"")
+        .replace("allow_extra_args = true", "allow_extra_args = false");
     fs::write(&path, raw).unwrap();
     assert!(Config::load(&path).is_err());
 }
@@ -106,9 +119,9 @@ fn secret_file_rejects_symlink() {
 fn config_rejects_psk_env_export_to_child() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    let raw = base_config("psk_env = \"TETHERD_TEST_PSK\"").replace(
-        "allow_exec = [\"/bin/echo\"]",
-        "allow_exec = [\"/bin/echo\"]\n[exec.env]\nTETHERD_TEST_PSK = \"must-not-leak\"",
+    let raw = format!(
+        "{}\n[exec.env]\nTETHERD_TEST_PSK = \"must-not-leak\"\n",
+        base_config("psk_env = \"TETHERD_TEST_PSK\"")
     );
     fs::write(&path, raw).unwrap();
     assert!(Config::load(&path).is_err());
