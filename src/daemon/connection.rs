@@ -11,7 +11,10 @@ use zeroize::Zeroizing;
 use crate::protocol::cipher::{read_encrypted, write_encrypted};
 use crate::protocol::handshake::server_handshake;
 use crate::protocol::message::{Message, PeerInfo};
+use crate::protocol::transport::{spawn_message_transport, stop_transport};
 use crate::{Error, Result};
+
+const SESSION_QUEUE_CAPACITY: usize = 128;
 
 #[derive(Clone)]
 pub struct PeerHandle {
@@ -78,18 +81,23 @@ impl SharedState {
             },
         );
 
-        if peer
-            .tx
-            .send(Message::ExecRequest {
-                id,
-                argv,
-                timeout_secs,
-            })
-            .await
-            .is_err()
-        {
-            self.pending.lock().await.remove(&id);
-            return Err(Error::PeerOffline(credential.to_owned()));
+        let request = Message::ExecRequest {
+            id,
+            argv,
+            timeout_secs,
+        };
+        match peer.tx.try_send(request) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.pending.lock().await.remove(&id);
+                return Err(Error::Busy(format!(
+                    "peer outbound queue is full: {credential}"
+                )));
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.pending.lock().await.remove(&id);
+                return Err(Error::PeerOffline(credential.to_owned()));
+            }
         }
 
         match tokio::time::timeout(response_timeout, rx).await {
@@ -104,6 +112,7 @@ impl SharedState {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn serve(
     stream: TcpStream,
     remote_addr: SocketAddr,
@@ -111,19 +120,17 @@ pub async fn serve(
     allowed_credential: String,
     heartbeat_timeout: Duration,
     handshake_timeout: Duration,
+    write_timeout: Duration,
     state: Arc<SharedState>,
 ) -> Result<()> {
-    let channel = tokio::time::timeout(handshake_timeout, server_handshake(stream, psk.as_slice()))
-        .await
-        .map_err(|_| Error::Timeout)??;
-    let mut reader = channel.reader;
-    let mut writer = channel.writer;
-    let mut recv_cipher = channel.recv_cipher;
-    let mut send_cipher = channel.send_cipher;
+    let mut channel =
+        tokio::time::timeout(handshake_timeout, server_handshake(stream, psk.as_slice()))
+            .await
+            .map_err(|_| Error::Timeout)??;
 
     let (credential, name) = match tokio::time::timeout(
         handshake_timeout,
-        read_encrypted::<_, Message>(&mut reader, &mut recv_cipher),
+        read_encrypted::<_, Message>(&mut channel.reader, &mut channel.recv_cipher),
     )
     .await
     .map_err(|_| Error::Timeout)??
@@ -133,37 +140,46 @@ pub async fn serve(
     };
 
     if credential != allowed_credential || !valid_peer_name(&name) {
-        let _ = write_encrypted(
-            &mut writer,
-            &mut send_cipher,
-            &Message::RegisterAck {
-                ok: false,
-                reason: Some("invalid credential or peer name".into()),
-            },
+        let _ = tokio::time::timeout(
+            write_timeout,
+            write_encrypted(
+                &mut channel.writer,
+                &mut channel.send_cipher,
+                &Message::RegisterAck {
+                    ok: false,
+                    reason: Some("invalid credential or peer name".into()),
+                },
+            ),
         )
         .await;
         return Err(Error::Authentication);
     }
 
-    write_encrypted(
-        &mut writer,
-        &mut send_cipher,
-        &Message::RegisterAck {
-            ok: true,
-            reason: None,
-        },
+    tokio::time::timeout(
+        write_timeout,
+        write_encrypted(
+            &mut channel.writer,
+            &mut channel.send_cipher,
+            &Message::RegisterAck {
+                ok: true,
+                reason: None,
+            },
+        ),
     )
-    .await?;
+    .await
+    .map_err(|_| Error::Timeout)??;
+
+    let mut transport =
+        spawn_message_transport(channel, write_timeout, SESSION_QUEUE_CAPACITY);
 
     let session_id = Uuid::new_v4();
-    let (tx, mut rx) = mpsc::channel::<Message>(128);
     let (cancel_tx, mut cancel_rx) = watch::channel(false);
     let handle = PeerHandle {
         session_id,
         name: name.clone(),
         remote_addr,
         connected_at: Instant::now(),
-        tx: tx.clone(),
+        tx: transport.outgoing.clone(),
         cancel: cancel_tx,
     };
     let replaced = state.peers.write().await.insert(credential.clone(), handle);
@@ -189,17 +205,25 @@ pub async fn serve(
 
     let result = loop {
         tokio::select! {
-            incoming = read_encrypted::<_, Message>(&mut reader, &mut recv_cipher) => {
-                match incoming {
-                    Ok(Message::Ping { nonce }) => {
-                        last_seen = Instant::now();
-                        if write_encrypted(&mut writer, &mut send_cipher, &Message::Pong { nonce }).await.is_err() {
-                            break Err(Error::Disconnected);
+            incoming = transport.incoming.recv() => {
+                let Some(message) = incoming else {
+                    break Err(Error::Disconnected);
+                };
+                last_seen = Instant::now();
+                match message {
+                    Message::Ping { nonce } => {
+                        match transport.outgoing.try_send(Message::Pong { nonce }) {
+                            Ok(()) => {}
+                            Err(mpsc::error::TrySendError::Full(_)) => {
+                                break Err(Error::Busy("peer outbound queue saturated".into()));
+                            }
+                            Err(mpsc::error::TrySendError::Closed(_)) => {
+                                break Err(Error::Disconnected);
+                            }
                         }
                     }
-                    Ok(Message::Pong { .. }) => last_seen = Instant::now(),
-                    Ok(message @ Message::ExecResponse { id, .. }) => {
-                        last_seen = Instant::now();
+                    Message::Pong { .. } => {}
+                    message @ Message::ExecResponse { id, .. } => {
                         let mut pending = state.pending.lock().await;
                         let matches_session = pending
                             .get(&id)
@@ -212,22 +236,26 @@ pub async fn serve(
                             log::debug!("ignoring stale or unknown exec response id={id}");
                         }
                     }
-                    Ok(other) => {
-                        last_seen = Instant::now();
+                    other => {
                         log::debug!("ignoring unexpected message kind={}", other.kind());
                     }
-                    Err(err) => break Err(err),
                 }
             }
-            outgoing = rx.recv() => {
-                match outgoing {
-                    Some(message) => {
-                        if let Err(err) = write_encrypted(&mut writer, &mut send_cipher, &message).await {
-                            break Err(err);
-                        }
-                    }
-                    None => break Ok(()),
-                }
+            reader_result = &mut transport.reader_task => {
+                break match reader_result {
+                    Ok(Ok(())) => Err(Error::Disconnected),
+                    Ok(Err(err)) => Err(err),
+                    Err(err) if err.is_cancelled() => Err(Error::Disconnected),
+                    Err(err) => Err(Error::Protocol(format!("reader task failed: {err}"))),
+                };
+            }
+            writer_result = &mut transport.writer_task => {
+                break match writer_result {
+                    Ok(Ok(())) => Err(Error::Disconnected),
+                    Ok(Err(err)) => Err(err),
+                    Err(err) if err.is_cancelled() => Err(Error::Disconnected),
+                    Err(err) => Err(Error::Protocol(format!("writer task failed: {err}"))),
+                };
             }
             _ = watchdog.tick() => {
                 if last_seen.elapsed() > heartbeat_timeout {
@@ -242,6 +270,7 @@ pub async fn serve(
         }
     };
 
+    stop_transport(&mut transport).await;
     cleanup_session(&state, &credential, session_id).await;
     log::info!(
         "peer disconnected credential={} remote={}",
