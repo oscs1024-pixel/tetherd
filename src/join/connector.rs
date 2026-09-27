@@ -83,11 +83,8 @@ async fn connect_once(
     .map_err(|_| Error::Timeout)??;
     match registration {
         Message::RegisterAck { ok: true, .. } => {}
-        Message::RegisterAck { reason, .. } => {
-            log::warn!(
-                "registration rejected reason={}",
-                reason.unwrap_or_default()
-            );
+        Message::RegisterAck { ok: false, .. } => {
+            log::warn!("registration rejected by server");
             return Err(Error::Authentication);
         }
         _ => return Err(Error::Protocol("expected register_ack".into())),
@@ -142,7 +139,7 @@ async fn connect_once(
                             let _ = tx.send(response).await;
                         });
                     }
-                    Ok(other) => log::debug!("ignoring unexpected message={:?}", other),
+                    Ok(other) => log::debug!("ignoring unexpected message kind={}", other.kind()),
                     Err(err) => break Err(err),
                 }
             }
