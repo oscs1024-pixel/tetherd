@@ -1,3 +1,5 @@
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -10,11 +12,13 @@ use zeroize::Zeroizing;
 
 use crate::protocol::cipher::{read_encrypted, write_encrypted};
 use crate::protocol::handshake::server_handshake;
-use crate::protocol::message::{Message, PeerInfo};
+use crate::protocol::message::{ExecResult, Message, OutputStream, PeerInfo};
 use crate::protocol::transport::{spawn_message_transport, stop_transport};
 use crate::{Error, Result};
 
 const SESSION_QUEUE_CAPACITY: usize = 128;
+const MAX_EXEC_OUTPUT_CHUNK_BYTES: usize = 48 * 1024;
+const MAX_EXEC_STREAM_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone)]
 pub struct PeerHandle {
@@ -29,7 +33,9 @@ pub struct PeerHandle {
 struct PendingRequest {
     credential: String,
     session_id: Uuid,
-    tx: oneshot::Sender<Result<Message>>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    tx: oneshot::Sender<Result<ExecResult>>,
 }
 
 #[derive(Default)]
@@ -62,7 +68,7 @@ impl SharedState {
         args: Vec<String>,
         timeout_secs: u64,
         response_timeout: Duration,
-    ) -> Result<Message> {
+    ) -> Result<ExecResult> {
         let peer = self
             .peers
             .read()
@@ -78,6 +84,8 @@ impl SharedState {
             PendingRequest {
                 credential: credential.to_owned(),
                 session_id: peer.session_id,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
                 tx,
             },
         );
@@ -224,17 +232,68 @@ pub async fn serve(
                         }
                     }
                     Message::Pong { .. } => {}
-                    message @ Message::ExecResponse { id, .. } => {
+                    Message::ExecOutput {
+                        id,
+                        stream,
+                        data_b64,
+                    } => {
+                        let decoded = STANDARD
+                            .decode(data_b64)
+                            .map_err(|_| Error::Protocol("invalid base64 exec output chunk".into()))?;
+                        if decoded.len() > MAX_EXEC_OUTPUT_CHUNK_BYTES {
+                            break Err(Error::Protocol("exec output chunk exceeds limit".into()));
+                        }
+
+                        let mut pending = state.pending.lock().await;
+                        let Some(request) = pending.get_mut(&id) else {
+                            log::debug!("ignoring stale or unknown exec output id={id}");
+                            continue;
+                        };
+                        if request.session_id != session_id {
+                            log::debug!("ignoring stale exec output session id={id}");
+                            continue;
+                        }
+
+                        let target = match stream {
+                            OutputStream::Stdout => &mut request.stdout,
+                            OutputStream::Stderr => &mut request.stderr,
+                        };
+                        let new_len = target
+                            .len()
+                            .checked_add(decoded.len())
+                            .ok_or_else(|| Error::Protocol("exec output length overflow".into()))?;
+                        if new_len > MAX_EXEC_STREAM_BYTES {
+                            break Err(Error::Protocol("exec output stream exceeds limit".into()));
+                        }
+                        target.extend_from_slice(&decoded);
+                    }
+                    Message::ExecFinished {
+                        id,
+                        exit_code,
+                        truncated,
+                        timed_out,
+                        elapsed_ms,
+                        error,
+                    } => {
                         let mut pending = state.pending.lock().await;
                         let matches_session = pending
                             .get(&id)
                             .is_some_and(|request| request.session_id == session_id);
                         if matches_session {
                             if let Some(waiter) = pending.remove(&id) {
-                                let _ = waiter.tx.send(Ok(message));
+                                let result = ExecResult {
+                                    exit_code,
+                                    stdout_b64: STANDARD.encode(waiter.stdout),
+                                    stderr_b64: STANDARD.encode(waiter.stderr),
+                                    truncated,
+                                    timed_out,
+                                    elapsed_ms,
+                                    error,
+                                };
+                                let _ = waiter.tx.send(Ok(result));
                             }
                         } else {
-                            log::debug!("ignoring stale or unknown exec response id={id}");
+                            log::debug!("ignoring stale or unknown exec finish id={id}");
                         }
                     }
                     other => {
@@ -384,6 +443,8 @@ mod tests {
             PendingRequest {
                 credential: credential.clone(),
                 session_id: old_session,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
                 tx: old_tx,
             },
         );
@@ -392,6 +453,8 @@ mod tests {
             PendingRequest {
                 credential: credential.clone(),
                 session_id: new_session,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
                 tx: new_tx,
             },
         );
