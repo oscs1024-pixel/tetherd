@@ -166,6 +166,8 @@ pub struct DaemonConfig {
     pub max_control_connections: usize,
     #[serde(default = "default_write_timeout_secs")]
     pub write_timeout_secs: u64,
+    #[serde(default = "default_exec_output_idle_timeout_secs")]
+    pub exec_output_idle_timeout_secs: u64,
     #[serde(default = "default_max_handshakes_per_minute")]
     pub max_handshakes_per_minute: usize,
     #[serde(default = "default_max_handshakes_per_ip_per_minute")]
@@ -184,6 +186,7 @@ impl Default for DaemonConfig {
             control_request_timeout_secs: default_control_request_timeout_secs(),
             max_control_connections: default_max_control_connections(),
             write_timeout_secs: default_write_timeout_secs(),
+            exec_output_idle_timeout_secs: default_exec_output_idle_timeout_secs(),
             max_handshakes_per_minute: default_max_handshakes_per_minute(),
             max_handshakes_per_ip_per_minute: default_max_handshakes_per_ip_per_minute(),
         }
@@ -216,6 +219,9 @@ fn default_max_control_connections() -> usize {
 }
 fn default_write_timeout_secs() -> u64 {
     10
+}
+fn default_exec_output_idle_timeout_secs() -> u64 {
+    15
 }
 fn default_max_handshakes_per_minute() -> usize {
     600
@@ -383,6 +389,7 @@ impl Config {
             || self.daemon.control_request_timeout_secs == 0
             || self.daemon.max_control_connections == 0
             || self.daemon.write_timeout_secs == 0
+            || self.daemon.exec_output_idle_timeout_secs == 0
             || self.daemon.max_handshakes_per_minute == 0
             || self.daemon.max_handshakes_per_ip_per_minute == 0
             || self.join.heartbeat_secs == 0
@@ -410,6 +417,7 @@ impl Config {
             || self.daemon.control_timeout_secs > 3600
             || self.daemon.control_request_timeout_secs > 300
             || self.daemon.write_timeout_secs > 300
+            || self.daemon.exec_output_idle_timeout_secs > 60
             || self.join.heartbeat_secs > 3600
             || self.join.heartbeat_timeout_secs > 7200
             || self.join.reconnect_secs > 3600
