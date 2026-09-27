@@ -1,11 +1,28 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
-use tetherd::config::ExecConfig;
+use tetherd::config::{CommandProfile, ExecConfig};
 use tetherd::join::executor::Executor;
 use uuid::Uuid;
 
-fn config(programs: Vec<PathBuf>) -> ExecConfig {
+fn config(programs: Vec<(&str, PathBuf, bool)>) -> ExecConfig {
+    let commands = programs
+        .into_iter()
+        .map(|(name, program, allow_user_args)| {
+            (
+                name.to_owned(),
+                CommandProfile {
+                    program,
+                    fixed_args: Vec::new(),
+                    allow_user_args,
+                    max_user_args: 16,
+                    max_user_arg_bytes: 16 * 1024,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
     ExecConfig {
-        allow_exec: programs,
+        commands,
+        allow_exec: Vec::new(),
         max_timeout_secs: 2,
         max_output_bytes: 32,
         max_concurrent: 2,
@@ -16,12 +33,18 @@ fn config(programs: Vec<PathBuf>) -> ExecConfig {
 }
 
 #[tokio::test]
-async fn executor_denies_non_allowlisted_program() {
-    let executor = Executor::new(config(vec![PathBuf::from("/bin/echo")])).unwrap();
+async fn executor_denies_unknown_profile() {
+    let executor = Executor::new(config(vec![(
+        "echo",
+        PathBuf::from("/bin/echo"),
+        true,
+    )]))
+    .unwrap();
     let result = executor
         .execute(
             Uuid::new_v4(),
-            vec!["/bin/sh".into(), "-c".into(), "true".into()],
+            "shell".into(),
+            vec!["-c".into(), "true".into()],
             1,
         )
         .await;
@@ -29,18 +52,49 @@ async fn executor_denies_non_allowlisted_program() {
         result
             .error
             .as_deref()
-            .is_some_and(|error| error.contains("not allowlisted")),
+            .is_some_and(|error| error.contains("unknown command profile")),
         "unexpected result: {result:?}"
     );
 }
 
 #[tokio::test]
-async fn executor_runs_argv_without_shell() {
-    let executor = Executor::new(config(vec![PathBuf::from("/bin/echo")])).unwrap();
+async fn executor_rejects_user_args_when_profile_does_not_allow_them() {
+    let executor = Executor::new(config(vec![(
+        "uptime",
+        PathBuf::from("/usr/bin/uptime"),
+        false,
+    )]))
+    .unwrap();
     let result = executor
         .execute(
             Uuid::new_v4(),
-            vec!["/bin/echo".into(), "hello;uname".into()],
+            "uptime".into(),
+            vec!["unexpected".into()],
+            1,
+        )
+        .await;
+    assert!(
+        result
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("does not accept user arguments")),
+        "unexpected result: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn executor_runs_arguments_without_shell_interpretation() {
+    let executor = Executor::new(config(vec![(
+        "echo",
+        PathBuf::from("/bin/echo"),
+        true,
+    )]))
+    .unwrap();
+    let result = executor
+        .execute(
+            Uuid::new_v4(),
+            "echo".into(),
+            vec!["hello;uname".into()],
             1,
         )
         .await;
@@ -50,14 +104,17 @@ async fn executor_runs_argv_without_shell() {
 
 #[tokio::test]
 async fn executor_truncates_but_drains_output() {
-    let executor = Executor::new(config(vec![PathBuf::from("/usr/bin/printf")])).unwrap();
+    let executor = Executor::new(config(vec![(
+        "printf",
+        PathBuf::from("/usr/bin/printf"),
+        true,
+    )]))
+    .unwrap();
     let result = executor
         .execute(
             Uuid::new_v4(),
-            vec![
-                "/usr/bin/printf".into(),
-                "abcdefghijklmnopqrstuvwxyz0123456789".into(),
-            ],
+            "printf".into(),
+            vec!["abcdefghijklmnopqrstuvwxyz0123456789".into()],
             1,
         )
         .await;
@@ -68,9 +125,19 @@ async fn executor_truncates_but_drains_output() {
 
 #[tokio::test]
 async fn executor_kills_on_timeout() {
-    let executor = Executor::new(config(vec![PathBuf::from("/bin/sleep")])).unwrap();
+    let executor = Executor::new(config(vec![(
+        "sleep",
+        PathBuf::from("/bin/sleep"),
+        true,
+    )]))
+    .unwrap();
     let result = executor
-        .execute(Uuid::new_v4(), vec!["/bin/sleep".into(), "5".into()], 1)
+        .execute(
+            Uuid::new_v4(),
+            "sleep".into(),
+            vec!["5".into()],
+            1,
+        )
         .await;
     assert!(result.timed_out);
 }
@@ -78,8 +145,8 @@ async fn executor_kills_on_timeout() {
 #[tokio::test]
 async fn executor_returns_busy_instead_of_queueing_unbounded_work() {
     let mut cfg = config(vec![
-        PathBuf::from("/bin/sleep"),
-        PathBuf::from("/bin/echo"),
+        ("sleep", PathBuf::from("/bin/sleep"), true),
+        ("echo", PathBuf::from("/bin/echo"), true),
     ]);
     cfg.max_concurrent = 1;
     let executor = Executor::new(cfg).unwrap();
@@ -87,13 +154,23 @@ async fn executor_returns_busy_instead_of_queueing_unbounded_work() {
         let executor = executor.clone();
         tokio::spawn(async move {
             executor
-                .execute(Uuid::new_v4(), vec!["/bin/sleep".into(), "1".into()], 2)
+                .execute(
+                    Uuid::new_v4(),
+                    "sleep".into(),
+                    vec!["1".into()],
+                    2,
+                )
                 .await
         })
     };
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let second = executor
-        .execute(Uuid::new_v4(), vec!["/bin/echo".into(), "busy".into()], 1)
+        .execute(
+            Uuid::new_v4(),
+            "echo".into(),
+            vec!["busy".into()],
+            1,
+        )
         .await;
     assert!(
         second
@@ -107,10 +184,15 @@ async fn executor_returns_busy_instead_of_queueing_unbounded_work() {
 
 #[tokio::test]
 async fn executor_never_inherits_parent_environment() {
-    let executor = Executor::new(config(vec![PathBuf::from("/usr/bin/env")])).unwrap();
+    let executor = Executor::new(config(vec![(
+        "env",
+        PathBuf::from("/usr/bin/env"),
+        false,
+    )]))
+    .unwrap();
     std::env::set_var("TETHERD_TEST_SECRET_DO_NOT_LEAK", "secret-value");
     let result = executor
-        .execute(Uuid::new_v4(), vec!["/usr/bin/env".into()], 1)
+        .execute(Uuid::new_v4(), "env".into(), Vec::new(), 1)
         .await;
     std::env::remove_var("TETHERD_TEST_SECRET_DO_NOT_LEAK");
     assert_eq!(result.error, None);
@@ -122,7 +204,7 @@ async fn executor_never_inherits_parent_environment() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn executor_drain_has_deadline_when_descendant_escapes_process_group() {
-    let mut cfg = config(vec![PathBuf::from("/bin/sh")]);
+    let mut cfg = config(vec![("shell", PathBuf::from("/bin/sh"), true)]);
     cfg.max_output_bytes = 4096;
     cfg.drain_grace_secs = 1;
     let executor = Executor::new(cfg).unwrap();
@@ -130,8 +212,8 @@ async fn executor_drain_has_deadline_when_descendant_escapes_process_group() {
     let result = executor
         .execute(
             Uuid::new_v4(),
+            "shell".into(),
             vec![
-                "/bin/sh".into(),
                 "-c".into(),
                 "/usr/bin/setsid /bin/sh -c 'sleep 3' & exit 0".into(),
             ],
@@ -144,27 +226,23 @@ async fn executor_drain_has_deadline_when_descendant_escapes_process_group() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn executor_rejects_allowlisted_symlink_after_target_changes() {
+async fn executor_pins_symlink_target_at_startup() {
     use std::os::unix::fs::symlink;
     let dir = tempfile::tempdir().unwrap();
     let link = dir.path().join("tool");
     symlink("/bin/echo", &link).unwrap();
-    let executor = Executor::new(config(vec![link.clone()])).unwrap();
+    let executor = Executor::new(config(vec![("tool", link.clone(), true)])).unwrap();
     std::fs::remove_file(&link).unwrap();
     symlink("/bin/sleep", &link).unwrap();
 
     let result = executor
         .execute(
             Uuid::new_v4(),
-            vec![link.display().to_string(), "0".into()],
+            "tool".into(),
+            vec!["0".into()],
             1,
         )
         .await;
-    assert!(
-        result
-            .error
-            .as_deref()
-            .is_some_and(|error| error.contains("not allowlisted")),
-        "unexpected result: {result:?}"
-    );
+    assert_eq!(result.error, None);
+    assert_eq!(result.stdout, b"0\n");
 }
