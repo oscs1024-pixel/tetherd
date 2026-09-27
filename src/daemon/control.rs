@@ -109,9 +109,14 @@ async fn handle_client(
             let remote_timeout = timeout_secs
                 .unwrap_or(exec_timeout.as_secs())
                 .clamp(1, exec_timeout.as_secs().max(1));
-            let response_timeout = Duration::from_secs(remote_timeout.saturating_add(5));
             match state
-                .exec(&credential, command, args, remote_timeout, response_timeout)
+                .exec(
+                    &credential,
+                    command,
+                    args,
+                    remote_timeout,
+                    output_idle_timeout,
+                )
                 .await
             {
                 Ok(result) => ControlResponse::Ok {
