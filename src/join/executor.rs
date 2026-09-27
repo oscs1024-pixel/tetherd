@@ -87,13 +87,13 @@ impl Executor {
             Ok(permit) => permit,
             Err(error) => return error_result(id, error, Instant::now()),
         };
-        self.execute_reserved(permit, id, command_id, args, timeout_secs)
+        self.execute_reserved(&permit, id, command_id, args, timeout_secs)
             .await
     }
 
     pub async fn execute_reserved(
         &self,
-        _permit: OwnedSemaphorePermit,
+        _permit: &OwnedSemaphorePermit,
         id: Uuid,
         command_id: String,
         args: Vec<String>,
