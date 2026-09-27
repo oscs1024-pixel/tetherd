@@ -48,19 +48,22 @@ pub enum CtlAction {
         #[arg(long)]
         json: bool,
     },
-    /// Execute an allowlisted program on a connected peer. No shell is used.
+    /// Execute a configured command profile on a connected peer.
     Exec {
         /// Peer credential configured on both sides.
         #[arg(long)]
         credential: String,
+        /// Command profile ID from exec.commands on the join host.
+        #[arg(long)]
+        command: String,
         /// Requested timeout in seconds. The peer enforces its own maximum.
         #[arg(long)]
         timeout: Option<u64>,
         /// Emit structured JSON instead of command stdout/stderr.
         #[arg(long)]
         json: bool,
-        /// Program and arguments. argv[0] must be an absolute allowlisted path.
-        #[arg(last = true, required = true, num_args = 1.., trailing_var_arg = true)]
-        argv: Vec<String>,
+        /// Optional user arguments. The command profile must explicitly allow them.
+        #[arg(last = true, num_args = 0.., trailing_var_arg = true)]
+        args: Vec<String>,
     },
 }
