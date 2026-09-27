@@ -6,8 +6,9 @@ use std::time::Duration;
 
 use tokio::net::UnixStream;
 
-use crate::protocol::frame::{read_json_frame, write_json_frame};
+use crate::protocol::frame::{read_json_frame_limited, write_json_frame_limited};
 use crate::protocol::message::{ControlRequest, ControlResponse, Message};
+use crate::protocol::{MAX_CONTROL_REQUEST_BYTES, MAX_CONTROL_RESPONSE_BYTES};
 use crate::{Error, Result};
 
 pub async fn request(
@@ -17,8 +18,8 @@ pub async fn request(
 ) -> Result<ControlResponse> {
     tokio::time::timeout(timeout, async {
         let mut stream = UnixStream::connect(socket).await?;
-        write_json_frame(&mut stream, &request).await?;
-        read_json_frame(&mut stream).await
+        write_json_frame_limited(&mut stream, &request, MAX_CONTROL_REQUEST_BYTES).await?;
+        read_json_frame_limited(&mut stream, MAX_CONTROL_RESPONSE_BYTES).await
     })
     .await
     .map_err(|_| Error::Timeout)?
