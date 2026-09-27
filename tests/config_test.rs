@@ -21,7 +21,10 @@ heartbeat_timeout_secs = 3
 reconnect_secs = 1
 
 [exec]
-allow_exec = ["/bin/echo"]
+
+[exec.commands.echo]
+program = "/bin/echo"
+allow_user_args = true
 "#
     )
 }
@@ -117,6 +120,16 @@ fn config_rejects_resource_limits_above_safety_ceiling() {
     let path = dir.path().join("config.toml");
     let raw = base_config("psk_env = \"TETHERD_TEST_PSK\"")
         .replace("[exec]\n", "[exec]\nmax_concurrent = 65\n");
+    fs::write(&path, raw).unwrap();
+    assert!(Config::load(&path).is_err());
+}
+
+#[test]
+fn config_rejects_legacy_raw_executable_allowlist() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let raw = base_config("psk_env = \"TETHERD_TEST_PSK\"")
+        .replace("[exec]\n", "[exec]\nallow_exec = [\"/bin/echo\"]\n");
     fs::write(&path, raw).unwrap();
     assert!(Config::load(&path).is_err());
 }
