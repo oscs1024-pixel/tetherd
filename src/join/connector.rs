@@ -1,3 +1,5 @@
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use rand::Rng;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -5,13 +7,14 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
 
 use crate::config::Config;
-use crate::join::executor::Executor;
+use crate::join::executor::{ExecutionResult, Executor};
 use crate::protocol::cipher::{read_encrypted, write_encrypted};
 use crate::protocol::handshake::client_handshake;
-use crate::protocol::message::Message;
+use crate::protocol::message::{Message, OutputStream};
 use crate::{Error, Result};
 
 const SESSION_QUEUE_CAPACITY: usize = 128;
+const OUTPUT_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_RECONNECT_SECS: u64 = 300;
 const PERMANENT_ERROR_FLOOR_SECS: u64 = 60;
 
@@ -208,18 +211,16 @@ async fn connect_once(
                                 let executor = executor.clone();
                                 let tx = tx.clone();
                                 tokio::spawn(async move {
-                                    let response = executor
+                                    let result = executor
                                         .execute_reserved(permit, id, argv, timeout_secs)
                                         .await;
-                                    let _ = tx.send(response).await;
+                                    let _ = send_execution_result(&tx, result).await;
                                 });
                             }
                             Err(error) => {
-                                let response = Message::ExecResponse {
+                                let response = Message::ExecFinished {
                                     id,
                                     exit_code: None,
-                                    stdout: String::new(),
-                                    stderr: String::new(),
                                     truncated: false,
                                     timed_out: false,
                                     elapsed_ms: 0,
@@ -270,6 +271,42 @@ async fn connect_once(
     let _ = reader_task.await;
     let _ = writer_task.await;
     result
+}
+
+
+async fn send_execution_result(
+    tx: &mpsc::Sender<Message>,
+    result: ExecutionResult,
+) -> Result<()> {
+    let mut sequence = 0u32;
+    for (stream, bytes) in [
+        (OutputStream::Stdout, result.stdout.as_slice()),
+        (OutputStream::Stderr, result.stderr.as_slice()),
+    ] {
+        for chunk in bytes.chunks(OUTPUT_CHUNK_BYTES) {
+            tx.send(Message::ExecOutputChunk {
+                id: result.id,
+                sequence,
+                stream,
+                data_b64: STANDARD.encode(chunk),
+            })
+            .await
+            .map_err(|_| Error::Disconnected)?;
+            sequence = sequence
+                .checked_add(1)
+                .ok_or_else(|| Error::Protocol("exec output sequence exhausted".into()))?;
+        }
+    }
+    tx.send(Message::ExecFinished {
+        id: result.id,
+        exit_code: result.exit_code,
+        truncated: result.truncated,
+        timed_out: result.timed_out,
+        elapsed_ms: result.elapsed_ms,
+        error: result.error,
+    })
+    .await
+    .map_err(|_| Error::Disconnected)
 }
 
 #[cfg(test)]
