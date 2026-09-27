@@ -7,7 +7,8 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::{Error, Result};
 
-use super::frame::{read_raw_frame, write_raw_frame};
+use super::frame::{read_raw_frame_limited, write_raw_frame_limited};
+use super::MAX_PEER_FRAME_BYTES;
 
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct SessionKeys {
@@ -109,7 +110,7 @@ where
 {
     let plaintext = Zeroizing::new(serde_json::to_vec(value)?);
     let mut encrypted = cipher.seal(&plaintext)?;
-    let result = write_raw_frame(writer, &encrypted).await;
+    let result = write_raw_frame_limited(writer, &encrypted, MAX_PEER_FRAME_BYTES).await;
     encrypted.zeroize();
     result
 }
@@ -119,7 +120,7 @@ where
     R: AsyncRead + Unpin,
     T: DeserializeOwned,
 {
-    let mut encrypted = read_raw_frame(reader).await?;
+    let mut encrypted = read_raw_frame_limited(reader, MAX_PEER_FRAME_BYTES).await?;
     let plaintext = Zeroizing::new(cipher.open(&encrypted)?);
     encrypted.zeroize();
     Ok(serde_json::from_slice(&plaintext)?)
