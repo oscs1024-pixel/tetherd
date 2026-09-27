@@ -117,10 +117,9 @@ async fn fragmented_frames_remain_synchronized_under_bidirectional_traffic() {
         }
         channel.writer.flush().await.unwrap();
 
-        let response: Message =
-            read_encrypted(&mut channel.reader, &mut channel.recv_cipher)
-                .await
-                .unwrap();
+        let response: Message = read_encrypted(&mut channel.reader, &mut channel.recv_cipher)
+            .await
+            .unwrap();
         assert!(matches!(response, Message::Pong { nonce: value } if value == nonce));
     }
 
