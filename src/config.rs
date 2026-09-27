@@ -84,7 +84,9 @@ impl AuthConfig {
         }
 
         let encoded = Zeroizing::new(if let Some(path) = &self.psk_file {
-            read_protected_file(path, FilePolicy::Secret)?.trim().to_owned()
+            read_protected_file(path, FilePolicy::Secret)?
+                .trim()
+                .to_owned()
         } else {
             let name = self.psk_env.as_ref().expect("validated PSK source");
             std::env::var(name)
@@ -584,9 +586,13 @@ fn validate_env_name(field: &str, value: &str) -> Result<()> {
     if value.is_empty()
         || value.len() > 128
         || value.contains('=')
-        || value.bytes().any(|byte| byte == 0 || byte.is_ascii_control())
+        || value
+            .bytes()
+            .any(|byte| byte == 0 || byte.is_ascii_control())
     {
-        return Err(Error::Config(format!("{field} is not a valid environment name")));
+        return Err(Error::Config(format!(
+            "{field} is not a valid environment name"
+        )));
     }
     Ok(())
 }
