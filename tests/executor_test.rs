@@ -12,6 +12,7 @@ fn config(programs: Vec<PathBuf>) -> ExecConfig {
         max_concurrent: 2,
         work_dir: None,
         inherit_env: false,
+        drain_grace_secs: 1,
     }
 }
 
