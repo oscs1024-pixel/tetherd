@@ -64,7 +64,8 @@ impl SharedState {
     pub async fn exec(
         &self,
         credential: &str,
-        argv: Vec<String>,
+        command: String,
+        args: Vec<String>,
         timeout_secs: u64,
         response_timeout: Duration,
     ) -> Result<Message> {
@@ -92,7 +93,8 @@ impl SharedState {
 
         match peer.tx.try_send(Message::ExecRequest {
             id,
-            argv,
+            command,
+            args,
             timeout_secs,
         }) {
             Ok(()) => {}
@@ -503,7 +505,8 @@ mod tests {
             Duration::from_millis(100),
             state.exec(
                 &credential,
-                vec!["/bin/echo".into(), "hello".into()],
+                "echo".into(),
+                vec!["hello".into()],
                 1,
                 Duration::from_secs(1),
             ),
