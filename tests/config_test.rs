@@ -133,3 +133,26 @@ fn config_rejects_legacy_raw_executable_allowlist() {
     fs::write(&path, raw).unwrap();
     assert!(Config::load(&path).is_err());
 }
+
+#[cfg(unix)]
+#[test]
+fn config_file_rejects_group_or_world_writable_mode() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, base_config("psk_env = \"TETHERD_TEST_PSK\"")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+    assert!(Config::load(&path).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn config_file_rejects_symlink() {
+    use std::os::unix::fs::symlink;
+    let dir = tempdir().unwrap();
+    let target = dir.path().join("real.toml");
+    fs::write(&target, base_config("psk_env = \"TETHERD_TEST_PSK\"")).unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+    let link = dir.path().join("config.toml");
+    symlink(&target, &link).unwrap();
+    assert!(Config::load(&link).is_err());
+}
