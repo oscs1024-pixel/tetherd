@@ -21,6 +21,7 @@ pub struct TransportFailure {
 
 pub struct MessageTransport {
     pub incoming: mpsc::Receiver<Message>,
+    pub priority_outgoing: mpsc::Sender<Message>,
     pub outgoing: mpsc::Sender<Message>,
     pub failures: mpsc::Receiver<TransportFailure>,
     reader_task: JoinHandle<()>,
@@ -40,6 +41,8 @@ pub fn spawn_message_transport(
     } = channel;
 
     let (incoming_tx, incoming) = mpsc::channel::<Message>(capacity);
+    let priority_capacity = capacity.clamp(4, 32);
+    let (priority_outgoing, mut priority_rx) = mpsc::channel::<Message>(priority_capacity);
     let (outgoing, mut outgoing_rx) = mpsc::channel::<Message>(capacity);
     let (failure_tx, failures) = mpsc::channel::<TransportFailure>(2);
 
@@ -68,7 +71,34 @@ pub fn spawn_message_transport(
 
     let writer_task = tokio::spawn(async move {
         let result: Result<()> = async {
-            while let Some(message) = outgoing_rx.recv().await {
+            let mut priority_open = true;
+            let mut normal_open = true;
+            while priority_open || normal_open {
+                let next = tokio::select! {
+                    biased;
+                    message = priority_rx.recv(), if priority_open => {
+                        match message {
+                            Some(message) => Some(message),
+                            None => {
+                                priority_open = false;
+                                None
+                            }
+                        }
+                    }
+                    message = outgoing_rx.recv(), if normal_open => {
+                        match message {
+                            Some(message) => Some(message),
+                            None => {
+                                normal_open = false;
+                                None
+                            }
+                        }
+                    }
+                };
+
+                let Some(message) = next else {
+                    continue;
+                };
                 tokio::time::timeout(
                     write_timeout,
                     write_encrypted(&mut writer, &mut send_cipher, &message),
@@ -92,6 +122,7 @@ pub fn spawn_message_transport(
 
     MessageTransport {
         incoming,
+        priority_outgoing,
         outgoing,
         failures,
         reader_task,
