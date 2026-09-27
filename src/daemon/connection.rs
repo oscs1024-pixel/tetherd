@@ -240,21 +240,13 @@ pub async fn serve(
                     }
                 }
             }
-            reader_result = &mut transport.reader_task => {
-                break match reader_result {
-                    Ok(Ok(())) => Err(Error::Disconnected),
-                    Ok(Err(err)) => Err(err),
-                    Err(err) if err.is_cancelled() => Err(Error::Disconnected),
-                    Err(err) => Err(Error::Protocol(format!("reader task failed: {err}"))),
+
+            failure = transport.failures.recv() => {
+                let Some(failure) = failure else {
+                    break Err(Error::Disconnected);
                 };
-            }
-            writer_result = &mut transport.writer_task => {
-                break match writer_result {
-                    Ok(Ok(())) => Err(Error::Disconnected),
-                    Ok(Err(err)) => Err(err),
-                    Err(err) if err.is_cancelled() => Err(Error::Disconnected),
-                    Err(err) => Err(Error::Protocol(format!("writer task failed: {err}"))),
-                };
+                log::debug!("transport failure side={:?}", failure.side);
+                break Err(failure.error);
             }
             _ = watchdog.tick() => {
                 if last_seen.elapsed() > heartbeat_timeout {
