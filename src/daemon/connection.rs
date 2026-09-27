@@ -169,8 +169,7 @@ pub async fn serve(
     .await
     .map_err(|_| Error::Timeout)??;
 
-    let mut transport =
-        spawn_message_transport(channel, write_timeout, SESSION_QUEUE_CAPACITY);
+    let mut transport = spawn_message_transport(channel, write_timeout, SESSION_QUEUE_CAPACITY);
 
     let session_id = Uuid::new_v4();
     let (cancel_tx, mut cancel_rx) = watch::channel(false);
