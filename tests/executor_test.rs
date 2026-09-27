@@ -121,11 +121,7 @@ async fn executor_bounds_pipe_drain_when_descendant_keeps_stdout_open() {
     let result = executor
         .execute(
             Uuid::new_v4(),
-            vec![
-                "/bin/sh".into(),
-                "-c".into(),
-                "sleep 30 & exit 0".into(),
-            ],
+            vec!["/bin/sh".into(), "-c".into(), "sleep 30 & exit 0".into()],
             2,
         )
         .await;
