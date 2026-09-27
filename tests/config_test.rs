@@ -88,3 +88,35 @@ fn config_rejects_relative_control_socket() {
     fs::write(&path, raw).unwrap();
     assert!(Config::load(&path).is_err());
 }
+
+#[test]
+fn config_rejects_unknown_security_relevant_fields() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let raw = base_config("psk_env = \"TETHERD_TEST_PSK\"")
+        .replace("max_concurrent = 4", "max_concurent = 4");
+    // The fixture does not contain max_concurrent by default, so insert a typo.
+    let raw = raw.replace("[exec]\n", "[exec]\nmax_concurent = 4\n");
+    fs::write(&path, raw).unwrap();
+    assert!(Config::load(&path).is_err());
+}
+
+#[test]
+fn config_rejects_inherited_child_environment() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let raw = base_config("psk_env = \"TETHERD_TEST_PSK\"")
+        .replace("[exec]\n", "[exec]\ninherit_env = true\n");
+    fs::write(&path, raw).unwrap();
+    assert!(Config::load(&path).is_err());
+}
+
+#[test]
+fn config_rejects_resource_limits_above_safety_ceiling() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let raw = base_config("psk_env = \"TETHERD_TEST_PSK\"")
+        .replace("[exec]\n", "[exec]\nmax_concurrent = 65\n");
+    fs::write(&path, raw).unwrap();
+    assert!(Config::load(&path).is_err());
+}
