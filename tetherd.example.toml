@@ -17,6 +17,9 @@ max_connections = 128
 control_timeout_secs = 30
 control_request_timeout_secs = 5
 max_control_connections = 64
+write_timeout_secs = 10
+max_handshakes_per_minute = 600
+max_handshakes_per_ip_per_minute = 120
 
 [join]
 server = "203.0.113.10:1234"
@@ -25,6 +28,7 @@ heartbeat_secs = 60
 heartbeat_timeout_secs = 180
 reconnect_secs = 5
 connect_timeout_secs = 10
+write_timeout_secs = 10
 
 [exec]
 # argv[0] must exactly match one of these absolute paths. No shell is inserted.
@@ -34,4 +38,5 @@ max_output_bytes = 1048576
 max_concurrent = 4
 # Default false: child receives an empty environment.
 inherit_env = false
+drain_grace_secs = 2
 # work_dir = "/var/empty"
