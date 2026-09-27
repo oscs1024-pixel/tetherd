@@ -1,6 +1,13 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
@@ -23,11 +30,27 @@ pub enum Message {
         argv: Vec<String>,
         timeout_secs: u64,
     },
+    ExecOutputChunk {
+        id: Uuid,
+        sequence: u32,
+        stream: OutputStream,
+        data_b64: String,
+    },
+    ExecFinished {
+        id: Uuid,
+        exit_code: Option<i32>,
+        truncated: bool,
+        timed_out: bool,
+        elapsed_ms: u64,
+        error: Option<String>,
+    },
+    // Aggregated local control result. This is produced by the daemon after
+    // receiving ExecOutputChunk/ExecFinished and is not sent over the peer link.
     ExecResponse {
         id: Uuid,
         exit_code: Option<i32>,
-        stdout: String,
-        stderr: String,
+        stdout_b64: String,
+        stderr_b64: String,
         truncated: bool,
         timed_out: bool,
         elapsed_ms: u64,
@@ -43,6 +66,8 @@ impl Message {
             Self::Ping { .. } => "ping",
             Self::Pong { .. } => "pong",
             Self::ExecRequest { .. } => "exec_request",
+            Self::ExecOutputChunk { .. } => "exec_output_chunk",
+            Self::ExecFinished { .. } => "exec_finished",
             Self::ExecResponse { .. } => "exec_response",
         }
     }
