@@ -3,7 +3,7 @@ use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncWrite};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::{Error, Result};
 
@@ -107,7 +107,7 @@ where
     W: AsyncWrite + Unpin,
     T: Serialize,
 {
-    let plaintext = serde_json::to_vec(value)?;
+    let plaintext = Zeroizing::new(serde_json::to_vec(value)?);
     let mut encrypted = cipher.seal(&plaintext)?;
     let result = write_raw_frame(writer, &encrypted).await;
     encrypted.zeroize();
@@ -120,9 +120,7 @@ where
     T: DeserializeOwned,
 {
     let mut encrypted = read_raw_frame(reader).await?;
-    let mut plaintext = cipher.open(&encrypted)?;
+    let plaintext = Zeroizing::new(cipher.open(&encrypted)?);
     encrypted.zeroize();
-    let decoded = serde_json::from_slice(&plaintext)?;
-    plaintext.zeroize();
-    Ok(decoded)
+    Ok(serde_json::from_slice(&plaintext)?)
 }
