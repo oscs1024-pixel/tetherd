@@ -66,6 +66,12 @@ program = "/bin/echo"
 allow_user_args = true
 max_user_args = 8
 max_user_arg_bytes = 4096
+
+[exec.commands.printf]
+program = "/usr/bin/printf"
+allow_user_args = true
+max_user_args = 8
+max_user_arg_bytes = 4096
 "#,
             psk_path, port, socket_path, port
         ),
@@ -126,6 +132,33 @@ max_user_arg_bytes = 4096
             other => panic!("unexpected exec result: {other:?}"),
         },
         other => panic!("unexpected control response: {other:?}"),
+    }
+
+    let binary_response = ctl::request(
+        &socket_path,
+        ControlRequest::Exec {
+            credential: "pair".into(),
+            command: "printf".into(),
+            args: vec!["\\377".into()],
+            timeout_secs: Some(2),
+        },
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    match binary_response {
+        ControlResponse::Ok {
+            result: Some(result),
+            ..
+        } => match *result {
+            Message::ExecResponse {
+                stdout_b64,
+                error: None,
+                ..
+            } => assert_eq!(STANDARD.decode(stdout_b64).unwrap(), vec![0xff]),
+            other => panic!("unexpected binary exec result: {other:?}"),
+        },
+        other => panic!("unexpected binary control response: {other:?}"),
     }
 
     shutdown_tx.send(true).unwrap();
