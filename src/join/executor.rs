@@ -15,8 +15,19 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::config::ExecConfig;
-use crate::protocol::message::Message;
 use crate::{Error, Result};
+
+#[derive(Debug)]
+pub struct ExecutionResult {
+    pub id: Uuid,
+    pub exit_code: Option<i32>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub truncated: bool,
+    pub timed_out: bool,
+    pub elapsed_ms: u64,
+    pub error: Option<String>,
+}
 
 #[derive(Clone)]
 pub struct Executor {
@@ -64,10 +75,15 @@ impl Executor {
             .map_err(|_| Error::Busy("executor is at capacity".into()))
     }
 
-    pub async fn execute(&self, id: Uuid, argv: Vec<String>, timeout_secs: u64) -> Message {
+    pub async fn execute(
+        &self,
+        id: Uuid,
+        argv: Vec<String>,
+        timeout_secs: u64,
+    ) -> ExecutionResult {
         let permit = match self.try_reserve() {
             Ok(permit) => permit,
-            Err(error) => return error_response(id, error, Instant::now()),
+            Err(error) => return error_result(id, error, Instant::now()),
         };
         self.execute_reserved(permit, id, argv, timeout_secs).await
     }
@@ -78,10 +94,10 @@ impl Executor {
         id: Uuid,
         argv: Vec<String>,
         timeout_secs: u64,
-    ) -> Message {
+    ) -> ExecutionResult {
         let started = Instant::now();
         match self.execute_inner(argv, timeout_secs).await {
-            Ok((exit_code, stdout, stderr, truncated, timed_out)) => Message::ExecResponse {
+            Ok((exit_code, stdout, stderr, truncated, timed_out)) => ExecutionResult {
                 id,
                 exit_code,
                 stdout,
@@ -91,7 +107,7 @@ impl Executor {
                 elapsed_ms: elapsed_ms(started),
                 error: None,
             },
-            Err(error) => error_response(id, error, started),
+            Err(error) => error_result(id, error, started),
         }
     }
 
@@ -99,7 +115,7 @@ impl Executor {
         &self,
         argv: Vec<String>,
         requested_timeout_secs: u64,
-    ) -> Result<(Option<i32>, String, String, bool, bool)> {
+    ) -> Result<(Option<i32>, Vec<u8>, Vec<u8>, bool, bool)> {
         validate_argv(&argv)?;
 
         let requested_program = Path::new(&argv[0]);
@@ -184,20 +200,20 @@ impl Executor {
 
         Ok((
             status.and_then(|s| s.code()),
-            String::from_utf8_lossy(&stdout_bytes).into_owned(),
-            String::from_utf8_lossy(&stderr_bytes).into_owned(),
+            stdout_bytes,
+            stderr_bytes,
             stdout_truncated || stderr_truncated,
             timed_out,
         ))
     }
 }
 
-fn error_response(id: Uuid, error: Error, started: Instant) -> Message {
-    Message::ExecResponse {
+fn error_result(id: Uuid, error: Error, started: Instant) -> ExecutionResult {
+    ExecutionResult {
         id,
         exit_code: None,
-        stdout: String::new(),
-        stderr: String::new(),
+        stdout: Vec::new(),
+        stderr: Vec::new(),
         truncated: false,
         timed_out: matches!(error, Error::Timeout),
         elapsed_ms: elapsed_ms(started),
