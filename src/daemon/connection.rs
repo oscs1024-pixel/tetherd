@@ -13,6 +13,8 @@ use crate::protocol::handshake::server_handshake;
 use crate::protocol::message::{Message, PeerInfo};
 use crate::{Error, Result};
 
+const SESSION_QUEUE_CAPACITY: usize = 128;
+
 #[derive(Clone)]
 pub struct PeerHandle {
     session_id: Uuid,
@@ -78,18 +80,20 @@ impl SharedState {
             },
         );
 
-        if peer
-            .tx
-            .send(Message::ExecRequest {
-                id,
-                argv,
-                timeout_secs,
-            })
-            .await
-            .is_err()
-        {
-            self.pending.lock().await.remove(&id);
-            return Err(Error::PeerOffline(credential.to_owned()));
+        match peer.tx.try_send(Message::ExecRequest {
+            id,
+            argv,
+            timeout_secs,
+        }) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.pending.lock().await.remove(&id);
+                return Err(Error::Busy("peer outbound queue is full".into()));
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.pending.lock().await.remove(&id);
+                return Err(Error::PeerOffline(credential.to_owned()));
+            }
         }
 
         match tokio::time::timeout(response_timeout, rx).await {
@@ -104,6 +108,7 @@ impl SharedState {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn serve(
     stream: TcpStream,
     remote_addr: SocketAddr,
@@ -111,6 +116,7 @@ pub async fn serve(
     allowed_credential: String,
     heartbeat_timeout: Duration,
     handshake_timeout: Duration,
+    write_timeout: Duration,
     state: Arc<SharedState>,
 ) -> Result<()> {
     let channel = tokio::time::timeout(handshake_timeout, server_handshake(stream, psk.as_slice()))
@@ -133,30 +139,69 @@ pub async fn serve(
     };
 
     if credential != allowed_credential || !valid_peer_name(&name) {
-        let _ = write_encrypted(
-            &mut writer,
-            &mut send_cipher,
-            &Message::RegisterAck {
-                ok: false,
-                reason: Some("invalid credential or peer name".into()),
-            },
+        let _ = tokio::time::timeout(
+            write_timeout,
+            write_encrypted(
+                &mut writer,
+                &mut send_cipher,
+                &Message::RegisterAck {
+                    ok: false,
+                    reason: Some("invalid credential or peer name".into()),
+                },
+            ),
         )
         .await;
         return Err(Error::Authentication);
     }
 
-    write_encrypted(
-        &mut writer,
-        &mut send_cipher,
-        &Message::RegisterAck {
-            ok: true,
-            reason: None,
-        },
+    tokio::time::timeout(
+        write_timeout,
+        write_encrypted(
+            &mut writer,
+            &mut send_cipher,
+            &Message::RegisterAck {
+                ok: true,
+                reason: None,
+            },
+        ),
     )
-    .await?;
+    .await
+    .map_err(|_| Error::Timeout)??;
+
+    // From this point on, the read half is owned by exactly one task. It is
+    // never recreated inside a select! loop, so a partial read_exact cannot
+    // be cancelled and restarted at a different framing offset.
+    let (incoming_tx, mut incoming_rx) = mpsc::channel::<Result<Message>>(SESSION_QUEUE_CAPACITY);
+    let mut reader_task = tokio::spawn(async move {
+        loop {
+            match read_encrypted::<_, Message>(&mut reader, &mut recv_cipher).await {
+                Ok(message) => {
+                    if incoming_tx.send(Ok(message)).await.is_err() {
+                        return;
+                    }
+                }
+                Err(error) => {
+                    let _ = incoming_tx.send(Err(error)).await;
+                    return;
+                }
+            }
+        }
+    });
+
+    let (tx, mut rx) = mpsc::channel::<Message>(SESSION_QUEUE_CAPACITY);
+    let mut writer_task = tokio::spawn(async move {
+        while let Some(message) = rx.recv().await {
+            tokio::time::timeout(
+                write_timeout,
+                write_encrypted(&mut writer, &mut send_cipher, &message),
+            )
+            .await
+            .map_err(|_| Error::Timeout)??;
+        }
+        Ok::<(), Error>(())
+    });
 
     let session_id = Uuid::new_v4();
-    let (tx, mut rx) = mpsc::channel::<Message>(128);
     let (cancel_tx, mut cancel_rx) = watch::channel(false);
     let handle = PeerHandle {
         session_id,
@@ -189,16 +234,16 @@ pub async fn serve(
 
     let result = loop {
         tokio::select! {
-            incoming = read_encrypted::<_, Message>(&mut reader, &mut recv_cipher) => {
+            incoming = incoming_rx.recv() => {
                 match incoming {
-                    Ok(Message::Ping { nonce }) => {
+                    Some(Ok(Message::Ping { nonce })) => {
                         last_seen = Instant::now();
-                        if write_encrypted(&mut writer, &mut send_cipher, &Message::Pong { nonce }).await.is_err() {
-                            break Err(Error::Disconnected);
+                        if tx.try_send(Message::Pong { nonce }).is_err() {
+                            break Err(Error::Busy("peer outbound queue is full".into()));
                         }
                     }
-                    Ok(Message::Pong { .. }) => last_seen = Instant::now(),
-                    Ok(message @ Message::ExecResponse { id, .. }) => {
+                    Some(Ok(Message::Pong { .. })) => last_seen = Instant::now(),
+                    Some(Ok(message @ Message::ExecResponse { id, .. })) => {
                         last_seen = Instant::now();
                         let mut pending = state.pending.lock().await;
                         let matches_session = pending
@@ -212,27 +257,25 @@ pub async fn serve(
                             log::debug!("ignoring stale or unknown exec response id={id}");
                         }
                     }
-                    Ok(other) => {
+                    Some(Ok(other)) => {
                         last_seen = Instant::now();
                         log::debug!("ignoring unexpected message kind={}", other.kind());
                     }
-                    Err(err) => break Err(err),
-                }
-            }
-            outgoing = rx.recv() => {
-                match outgoing {
-                    Some(message) => {
-                        if let Err(err) = write_encrypted(&mut writer, &mut send_cipher, &message).await {
-                            break Err(err);
-                        }
-                    }
-                    None => break Ok(()),
+                    Some(Err(error)) => break Err(error),
+                    None => break Err(Error::Disconnected),
                 }
             }
             _ = watchdog.tick() => {
                 if last_seen.elapsed() > heartbeat_timeout {
                     break Err(Error::Timeout);
                 }
+            }
+            writer_result = &mut writer_task => {
+                break match writer_result {
+                    Ok(Ok(())) => Err(Error::Disconnected),
+                    Ok(Err(error)) => Err(error),
+                    Err(error) => Err(Error::Protocol(format!("writer task failed: {error}"))),
+                };
             }
             changed = cancel_rx.changed() => {
                 if changed.is_err() || *cancel_rx.borrow() {
@@ -243,6 +286,15 @@ pub async fn serve(
     };
 
     cleanup_session(&state, &credential, session_id).await;
+    drop(tx);
+    if !reader_task.is_finished() {
+        reader_task.abort();
+    }
+    if !writer_task.is_finished() {
+        writer_task.abort();
+    }
+    let _ = reader_task.await;
+    let _ = writer_task.await;
     log::info!(
         "peer disconnected credential={} remote={}",
         credential,
@@ -287,10 +339,11 @@ fn valid_peer_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{cleanup_session, PeerHandle, PendingRequest, SharedState};
+    use super::{cleanup_session, PeerHandle, PendingRequest, SharedState, SESSION_QUEUE_CAPACITY};
     use crate::protocol::message::Message;
+    use crate::Error;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
     use tokio::sync::{mpsc, oneshot, watch};
     use uuid::Uuid;
 
@@ -353,5 +406,42 @@ mod tests {
         assert!(pending.contains_key(&new_id));
         drop(pending);
         assert!(old_rx.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn full_peer_queue_returns_busy_without_waiting() {
+        let state = SharedState::default();
+        let credential = "pair".to_string();
+        let session_id = Uuid::new_v4();
+        let (peer_tx, _peer_rx) = mpsc::channel::<Message>(SESSION_QUEUE_CAPACITY);
+        for nonce in 0..SESSION_QUEUE_CAPACITY {
+            peer_tx.try_send(Message::Ping { nonce: nonce as u64 }).unwrap();
+        }
+        let (cancel_tx, _cancel_rx) = watch::channel(false);
+        state.peers.write().await.insert(
+            credential.clone(),
+            PeerHandle {
+                session_id,
+                name: "peer".into(),
+                remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1234),
+                connected_at: Instant::now(),
+                tx: peer_tx,
+                cancel: cancel_tx,
+            },
+        );
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            state.exec(
+                &credential,
+                vec!["/bin/echo".into(), "hello".into()],
+                1,
+                Duration::from_secs(1),
+            ),
+        )
+        .await
+        .expect("exec admission must not block");
+        assert!(matches!(result, Err(Error::Busy(_))));
+        assert!(state.pending.lock().await.is_empty());
     }
 }
