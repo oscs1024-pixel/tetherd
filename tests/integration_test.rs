@@ -42,6 +42,9 @@ max_connections = 16
 control_timeout_secs = 5
 control_request_timeout_secs = 2
 max_control_connections = 8
+write_timeout_secs = 2
+max_handshakes_per_minute = 120
+max_handshakes_per_minute_per_ip = 60
 
 [join]
 server = "127.0.0.1:{}"
@@ -50,13 +53,16 @@ heartbeat_secs = 1
 heartbeat_timeout_secs = 4
 reconnect_secs = 1
 connect_timeout_secs = 2
+write_timeout_secs = 2
+reconnect_max_secs = 4
+auth_failure_backoff_secs = 3
 
 [exec]
 allow_exec = ["/bin/echo"]
 max_timeout_secs = 3
 max_output_bytes = 4096
 max_concurrent = 2
-inherit_env = false
+output_drain_timeout_secs = 1
 "#,
             psk_path, port, socket_path, port
         ),
