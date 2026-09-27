@@ -37,11 +37,8 @@ fn config(commands: Vec<(&str, CommandConfig)>) -> ExecConfig {
 
 #[tokio::test]
 async fn executor_denies_unknown_command_profile() {
-    let executor = Executor::new(config(vec![(
-        "echo",
-        profile("/bin/echo", &[], true, 4),
-    )]))
-    .unwrap();
+    let executor =
+        Executor::new(config(vec![("echo", profile("/bin/echo", &[], true, 4))])).unwrap();
     let result = executor
         .execute(
             Uuid::new_v4(),
@@ -89,12 +86,7 @@ async fn executor_runs_allowed_args_without_shell() {
     )]))
     .unwrap();
     let result = executor
-        .execute(
-            Uuid::new_v4(),
-            "echo".into(),
-            vec!["hello;uname".into()],
-            1,
-        )
+        .execute(Uuid::new_v4(), "echo".into(), vec!["hello;uname".into()], 1)
         .await;
     match result {
         Message::ExecResponse {
@@ -126,10 +118,7 @@ async fn executor_clears_parent_environment_and_uses_only_explicit_env() {
 
 #[tokio::test]
 async fn executor_truncates_but_drains_output() {
-    let mut cfg = config(vec![(
-        "printf",
-        profile("/usr/bin/printf", &[], true, 1),
-    )]);
+    let mut cfg = config(vec![("printf", profile("/usr/bin/printf", &[], true, 1))]);
     cfg.max_output_bytes = 32;
     let executor = Executor::new(cfg).unwrap();
     let result = executor
@@ -153,18 +142,10 @@ async fn executor_truncates_but_drains_output() {
 
 #[tokio::test]
 async fn executor_kills_on_timeout() {
-    let executor = Executor::new(config(vec![(
-        "sleep",
-        profile("/bin/sleep", &[], true, 1),
-    )]))
-    .unwrap();
+    let executor =
+        Executor::new(config(vec![("sleep", profile("/bin/sleep", &[], true, 1))])).unwrap();
     let result = executor
-        .execute(
-            Uuid::new_v4(),
-            "sleep".into(),
-            vec!["5".into()],
-            1,
-        )
+        .execute(Uuid::new_v4(), "sleep".into(), vec!["5".into()], 1)
         .await;
     match result {
         Message::ExecResponse {
@@ -209,12 +190,7 @@ async fn executor_returns_busy_instead_of_queueing_unbounded_work() {
     let permit = executor.try_reserve().unwrap();
 
     let second = executor
-        .execute(
-            Uuid::new_v4(),
-            "echo".into(),
-            vec!["busy".into()],
-            1,
-        )
+        .execute(Uuid::new_v4(), "echo".into(), vec!["busy".into()], 1)
         .await;
     match second {
         Message::ExecResponse {
@@ -248,12 +224,7 @@ async fn executor_rejects_command_symlink_after_target_changes() {
     symlink("/bin/sleep", &link).unwrap();
 
     let result = executor
-        .execute(
-            Uuid::new_v4(),
-            "tool".into(),
-            vec!["0".into()],
-            1,
-        )
+        .execute(Uuid::new_v4(), "tool".into(), vec!["0".into()], 1)
         .await;
     match result {
         Message::ExecResponse {
