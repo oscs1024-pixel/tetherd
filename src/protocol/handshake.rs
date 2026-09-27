@@ -133,7 +133,7 @@ pub async fn client_handshake(mut stream: TcpStream, psk: &[u8]) -> Result<Secur
     }
     let expected = auth_tag(
         psk,
-        b"server-auth-v1",
+        b"server-auth-v2",
         &client_pub,
         &server.server_pub,
         &client_nonce,
@@ -143,7 +143,7 @@ pub async fn client_handshake(mut stream: TcpStream, psk: &[u8]) -> Result<Secur
 
     let client_tag = auth_tag(
         psk,
-        b"client-auth-v1",
+        b"client-auth-v2",
         &client_pub,
         &server.server_pub,
         &client_nonce,
@@ -190,7 +190,7 @@ pub async fn server_handshake(mut stream: TcpStream, psk: &[u8]) -> Result<Secur
     OsRng.fill_bytes(&mut server_nonce);
     let server_tag = auth_tag(
         psk,
-        b"server-auth-v1",
+        b"server-auth-v2",
         &client.client_pub,
         &server_pub,
         &client.nonce,
@@ -210,7 +210,7 @@ pub async fn server_handshake(mut stream: TcpStream, psk: &[u8]) -> Result<Secur
     let auth: ClientAuth = read_json_frame_limited(&mut stream, MAX_HANDSHAKE_FRAME_BYTES).await?;
     let expected = auth_tag(
         psk,
-        b"client-auth-v1",
+        b"client-auth-v2",
         &client.client_pub,
         &server_pub,
         &client.nonce,
