@@ -90,10 +90,7 @@ pub fn parse_level(value: &str) -> Result<LevelFilter> {
     LevelFilter::from_str(value).map_err(|_| Error::Config(format!("invalid log level: {value}")))
 }
 
-pub fn resolve_color(
-    cli_override: Option<ColorMode>,
-    configured: Option<ColorMode>,
-) -> ColorMode {
+pub fn resolve_color(cli_override: Option<ColorMode>, configured: Option<ColorMode>) -> ColorMode {
     if let Some(mode) = cli_override {
         return mode;
     }
