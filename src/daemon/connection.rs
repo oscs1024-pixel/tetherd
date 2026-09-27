@@ -465,8 +465,8 @@ fn valid_peer_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        await_exec_response, cleanup_session, PeerHandle, PendingRequest,
-        SharedState, SESSION_QUEUE_CAPACITY,
+        await_exec_response, cleanup_session, PeerHandle, PendingRequest, SharedState,
+        SESSION_QUEUE_CAPACITY,
     };
     use crate::daemon::output_transfer_budget;
     use crate::protocol::message::Message;
