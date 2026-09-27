@@ -4,11 +4,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{Error, Result};
 
-pub async fn write_raw_frame_limited<W>(
-    writer: &mut W,
-    payload: &[u8],
-    limit: usize,
-) -> Result<()>
+pub async fn write_raw_frame_limited<W>(writer: &mut W, payload: &[u8], limit: usize) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
@@ -45,11 +41,7 @@ where
     Ok(payload)
 }
 
-pub async fn write_json_frame_limited<W, T>(
-    writer: &mut W,
-    value: &T,
-    limit: usize,
-) -> Result<()>
+pub async fn write_json_frame_limited<W, T>(writer: &mut W, value: &T, limit: usize) -> Result<()>
 where
     W: AsyncWrite + Unpin,
     T: Serialize,
