@@ -165,12 +165,19 @@ async fn connect_once(
                             break Err(err);
                         }
                     }
-                    Message::ExecRequest { id, argv, timeout_secs } => {
+                    Message::ExecRequest {
+                        id,
+                        command,
+                        args,
+                        timeout_secs,
+                    } => {
                         match executor.try_reserve() {
                             Ok(permit) => {
                                 let executor = executor.clone();
                                 exec_tasks.spawn(async move {
-                                    executor.execute_reserved(id, argv, timeout_secs, permit).await
+                                    executor
+                                        .execute_reserved(id, command, args, timeout_secs, permit)
+                                        .await
                                 });
                             }
                             Err(error) => {
