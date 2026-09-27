@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{watch, Semaphore};
+use tokio::task::JoinSet;
 
 use crate::daemon::connection::SharedState;
 use crate::protocol::frame::{read_json_frame_limited, write_json_frame};
@@ -27,10 +28,14 @@ pub async fn serve(
     log::info!("control socket listening path={}", socket_path.display());
 
     let connections = Arc::new(Semaphore::new(max_connections));
-    loop {
+    let mut clients = JoinSet::new();
+    let result = loop {
         tokio::select! {
             accepted = listener.accept() => {
-                let (stream, _) = accepted?;
+                let (stream, _) = match accepted {
+                    Ok(value) => value,
+                    Err(error) => break Err(error.into()),
+                };
                 let permit = match connections.clone().try_acquire_owned() {
                     Ok(permit) => permit,
                     Err(_) => {
@@ -40,20 +45,31 @@ pub async fn serve(
                     }
                 };
                 let state = state.clone();
-                tokio::spawn(async move {
+                clients.spawn(async move {
                     let _permit = permit;
-                    if let Err(err) = handle_client(stream, state, exec_timeout, request_timeout).await {
-                        log::warn!("control client failed error={err}");
-                    }
+                    handle_client(stream, state, exec_timeout, request_timeout).await
                 });
+            }
+            joined = clients.join_next(), if !clients.is_empty() => {
+                match joined {
+                    Some(Ok(Ok(()))) => {}
+                    Some(Ok(Err(error))) => log::warn!("control client failed error={error}"),
+                    Some(Err(error)) if error.is_cancelled() => {}
+                    Some(Err(error)) => log::warn!("control task join failure error={error}"),
+                    None => {}
+                }
             }
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
-                    return Ok(());
+                    break Ok(());
                 }
             }
         }
-    }
+    };
+
+    clients.abort_all();
+    while clients.join_next().await.is_some() {}
+    result
 }
 
 async fn handle_client(
@@ -112,16 +128,19 @@ async fn handle_client(
 }
 
 fn prepare_socket_path(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-            }
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::Control("control socket must have a parent directory".into()))?;
+    if !parent.exists() {
+        fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
         }
     }
+    validate_socket_parent(parent)?;
+
     if path.exists() {
         let metadata = fs::symlink_metadata(path)?;
         #[cfg(unix)]
@@ -136,6 +155,39 @@ fn prepare_socket_path(path: &Path) -> Result<()> {
         }
         fs::remove_file(path)?;
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_socket_parent(parent: &Path) -> Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let metadata = fs::symlink_metadata(parent)?;
+    if !metadata.file_type().is_dir() {
+        return Err(Error::Control(format!(
+            "control socket parent is not a directory: {}",
+            parent.display()
+        )));
+    }
+    let euid = nix::unistd::Uid::effective().as_raw();
+    if metadata.uid() != euid && metadata.uid() != 0 {
+        return Err(Error::Control(format!(
+            "control socket parent must be owned by root or the daemon UID: {} owner={}",
+            parent.display(),
+            metadata.uid()
+        )));
+    }
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode & 0o022 != 0 {
+        return Err(Error::Control(format!(
+            "control socket parent must not be group/world writable: {} mode={mode:o}",
+            parent.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_socket_parent(_parent: &Path) -> Result<()> {
     Ok(())
 }
 
