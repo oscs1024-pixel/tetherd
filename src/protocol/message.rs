@@ -27,7 +27,8 @@ pub enum Message {
     },
     ExecRequest {
         id: Uuid,
-        argv: Vec<String>,
+        command: String,
+        args: Vec<String>,
         timeout_secs: u64,
     },
     ExecOutputChunk {
@@ -79,7 +80,8 @@ pub enum ControlRequest {
     List,
     Exec {
         credential: String,
-        argv: Vec<String>,
+        command: String,
+        args: Vec<String>,
         timeout_secs: Option<u64>,
     },
 }
