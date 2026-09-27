@@ -108,7 +108,7 @@ fn shutdown_channel() -> (watch::Sender<bool>, watch::Receiver<bool>) {
     let (tx, rx) = watch::channel(false);
     let signal_tx = tx.clone();
     tokio::spawn(async move {
-        match tokio::signal::ctrl_c().await {
+        match wait_for_shutdown_signal().await {
             Ok(()) => {
                 let _ = signal_tx.send(true);
             }
@@ -116,4 +116,20 @@ fn shutdown_channel() -> (watch::Sender<bool>, watch::Receiver<bool>) {
         }
     });
     (tx, rx)
+}
+
+#[cfg(unix)]
+async fn wait_for_shutdown_signal() -> std::io::Result<()> {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut terminate = signal(SignalKind::terminate())?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result,
+        _ = terminate.recv() => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown_signal() -> std::io::Result<()> {
+    tokio::signal::ctrl_c().await
 }
