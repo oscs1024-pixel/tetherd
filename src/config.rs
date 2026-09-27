@@ -3,6 +3,7 @@ use base64::Engine;
 use log::LevelFilter;
 use serde::Deserialize;
 use std::collections::BTreeMap;
+#[cfg(not(unix))]
 use std::fs;
 use std::io::Read;
 use std::net::SocketAddr;
