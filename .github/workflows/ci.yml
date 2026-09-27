@@ -26,6 +26,13 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: bash scripts/check-workflow-pins.sh
+      - name: Validate CycloneDX generator
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --format-version=1 > "${RUNNER_TEMP}/cargo-metadata.json"
+          python3 scripts/generate-cyclonedx.py "${RUNNER_TEMP}/cargo-metadata.json" "${RUNNER_TEMP}/sbom.cdx.json"
+          python3 -c 'import json,sys; b=json.load(open(sys.argv[1])); assert b["bomFormat"]=="CycloneDX" and b["specVersion"]=="1.5"' "${RUNNER_TEMP}/sbom.cdx.json"
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo test --locked --all-targets --all-features
