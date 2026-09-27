@@ -1,3 +1,6 @@
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
+use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
@@ -53,15 +56,21 @@ pub fn print_response(response: ControlResponse, json: bool) -> Result<i32> {
         } => match *result {
             Message::ExecResponse {
                 exit_code,
-                stdout,
-                stderr,
+                stdout_b64,
+                stderr_b64,
                 truncated,
                 timed_out,
                 error,
                 ..
             } => {
-                print!("{stdout}");
-                eprint!("{stderr}");
+                let stdout = STANDARD
+                    .decode(stdout_b64)
+                    .map_err(|_| Error::Control("invalid stdout encoding from daemon".into()))?;
+                let stderr = STANDARD
+                    .decode(stderr_b64)
+                    .map_err(|_| Error::Control("invalid stderr encoding from daemon".into()))?;
+                std::io::stdout().write_all(&stdout)?;
+                std::io::stderr().write_all(&stderr)?;
                 if truncated {
                     eprintln!("tetherd: output truncated");
                 }
