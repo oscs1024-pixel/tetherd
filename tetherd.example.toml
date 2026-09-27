@@ -31,12 +31,21 @@ connect_timeout_secs = 10
 write_timeout_secs = 10
 
 [exec]
-# argv[0] must exactly match one of these absolute paths. No shell is inserted.
-allow_exec = ["/bin/echo", "/usr/bin/uptime"]
 max_timeout_secs = 30
 max_output_bytes = 1048576
 max_concurrent = 4
-# Default false: child receives an empty environment.
+# Child processes always receive an empty inherited environment.
 inherit_env = false
 drain_grace_secs = 2
 # work_dir = "/var/empty"
+
+# Remote callers address profiles by ID and cannot choose executable paths.
+[exec.commands.echo]
+program = "/bin/echo"
+allow_user_args = true
+max_user_args = 8
+max_user_arg_bytes = 4096
+
+[exec.commands.uptime]
+program = "/usr/bin/uptime"
+allow_user_args = false
