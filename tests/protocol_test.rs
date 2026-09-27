@@ -78,6 +78,7 @@ async fn fragmented_frames_remain_synchronized_under_bidirectional_traffic() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let psk = [0x33u8; 32];
+    let (client_done_tx, client_done_rx) = tokio::sync::oneshot::channel::<()>();
 
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
@@ -96,6 +97,10 @@ async fn fragmented_frames_remain_synchronized_under_bidirectional_traffic() {
                 .unwrap();
         }
 
+        tokio::time::timeout(Duration::from_secs(2), client_done_rx)
+            .await
+            .unwrap()
+            .unwrap();
         stop_transport(&mut transport).await;
     });
 
@@ -123,6 +128,7 @@ async fn fragmented_frames_remain_synchronized_under_bidirectional_traffic() {
         assert!(matches!(response, Message::Pong { nonce: value } if value == nonce));
     }
 
+    client_done_tx.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(5), server)
         .await
         .unwrap()
