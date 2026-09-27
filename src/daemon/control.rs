@@ -8,9 +8,9 @@ use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
 
 use crate::daemon::connection::SharedState;
-use crate::protocol::frame::{read_json_frame_limited, write_json_frame};
+use crate::protocol::frame::{read_json_frame_limited, write_json_frame_limited};
 use crate::protocol::message::{ControlRequest, ControlResponse};
-use crate::protocol::MAX_CONTROL_REQUEST_BYTES;
+use crate::protocol::{MAX_CONTROL_REQUEST_BYTES, MAX_CONTROL_RESPONSE_BYTES};
 use crate::{Error, Result};
 
 pub async fn serve(
@@ -116,9 +116,12 @@ async fn handle_client(
         }
     };
 
-    tokio::time::timeout(request_timeout, write_json_frame(&mut stream, &response))
-        .await
-        .map_err(|_| Error::Timeout)??;
+    tokio::time::timeout(
+        request_timeout,
+        write_json_frame_limited(&mut stream, &response, MAX_CONTROL_RESPONSE_BYTES),
+    )
+    .await
+    .map_err(|_| Error::Timeout)??;
     Ok(())
 }
 
