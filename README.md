@@ -45,7 +45,7 @@ Child processes:
 - have bounded stdout/stderr capture;
 - have a bounded post-exit pipe-drain grace period.
 
-The PSK is never accepted inline in TOML. Configure exactly one of `auth.psk_file` or `auth.psk_env`. Unix PSK files are opened with `O_NOFOLLOW|O_CLOEXEC`, must be regular files owned by root or the service UID, and must not grant group/other access. Configuration files also reject unsafe ownership/write permissions and symbolic-link substitution.
+The PSK is never accepted inline in TOML. Configure exactly one of `auth.psk_file` or `auth.psk_env`. Unix PSK files are opened with `O_NOFOLLOW|O_CLOEXEC`, must be regular files owned by root or the service UID, and must not grant group/other access. Configuration files use the same single-descriptor pattern: open once with `O_NOFOLLOW|O_CLOEXEC`, validate that opened descriptor, then parse bytes from the same descriptor. This removes the validation/read pathname TOCTOU window.
 
 ## Build
 
@@ -119,7 +119,11 @@ Join reconnects use capped exponential jitter. Authentication/protocol failures 
 
 Remote command output is kept as raw bytes by the executor. It is split into 64 KiB chunks, Base64-encoded inside encrypted protocol messages, strictly sequenced, and independently bounded for stdout/stderr. The daemon aggregates only validated chunks. Local `ctl` decodes the final result and writes the original bytes directly to stdout/stderr.
 
-This prevents a large single response frame from monopolizing the encrypted writer and preserves non-UTF-8 command output exactly.
+Executor admission is held until the final result frame is accepted by the bounded outbound queue, so a slow writer cannot release execution capacity while completed multi-megabyte results accumulate in detached tasks. Command execution and result transport use separate deadlines: the remote command gets its configured runtime budget, then output chunks refresh a dedicated inactivity timer, with a separate absolute transfer ceiling.
+
+Frame sizes are constrained by trust surface rather than one global maximum: handshake frames are limited to 4 KiB, authenticated peer frames to 256 KiB, local UDS requests to 512 KiB, and local UDS responses to 4 MiB.
+
+This prevents a large single response frame from monopolizing the encrypted writer, bounds pre-decryption allocations, and preserves non-UTF-8 command output exactly.
 
 ## Protocol lifecycle
 
@@ -139,7 +143,7 @@ The suite covers:
 
 - encryption round-trip, tamper and replay rejection;
 - malformed authenticated payloads;
-- oversized/truncated frames;
+- oversized/truncated frames and trust-surface-specific frame ceilings;
 - successful and wrong-PSK handshakes;
 - fragmented encrypted frames spanning multiple watchdog ticks;
 - PSK source, permission and symlink validation;
@@ -147,10 +151,10 @@ The suite covers:
 - legacy raw executable-policy rejection;
 - command-profile capability boundaries;
 - no shell interpolation and no inherited secret environment;
-- executor admission backpressure;
+- executor admission backpressure, including permit retention during result delivery;
 - process timeout/process-group termination;
 - bounded drain when descendants retain stdout/stderr;
-- chunk ordering and aggregate output limits;
+- chunk ordering, aggregate output limits, and command/output inactivity deadline separation;
 - binary output preservation end to end;
 - stale-session isolation;
 - peer outbound queue saturation;
