@@ -109,10 +109,10 @@ inherit_env = false
             ..
         } => match *result {
             Message::ExecResponse {
-                stdout,
+                stdout_b64,
                 error: None,
                 ..
-            } => assert_eq!(stdout, "e2e-ok\n"),
+            } => assert_eq!(STANDARD.decode(stdout_b64).unwrap(), b"e2e-ok\n"),
             other => panic!("unexpected exec result: {other:?}"),
         },
         other => panic!("unexpected control response: {other:?}"),
