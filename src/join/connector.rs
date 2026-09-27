@@ -217,9 +217,10 @@ async fn connect_once(
                                 let tx = tx.clone();
                                 tokio::spawn(async move {
                                     let result = executor
-                                        .execute_reserved(permit, id, command, args, timeout_secs)
+                                        .execute_reserved(&permit, id, command, args, timeout_secs)
                                         .await;
                                     let _ = send_execution_result(&tx, result).await;
+                                    drop(permit);
                                 });
                             }
                             Err(error) => {
