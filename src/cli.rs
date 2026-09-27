@@ -59,8 +59,11 @@ pub enum CtlAction {
         /// Emit structured JSON instead of command stdout/stderr.
         #[arg(long)]
         json: bool,
-        /// Program and arguments. argv[0] must be an absolute allowlisted path.
-        #[arg(last = true, required = true, num_args = 1.., trailing_var_arg = true)]
-        argv: Vec<String>,
+        /// Named command profile configured on the join side.
+        #[arg(long)]
+        command: String,
+        /// Extra arguments accepted only when the command profile explicitly allows them.
+        #[arg(last = true, num_args = 0.., trailing_var_arg = true)]
+        args: Vec<String>,
     },
 }
