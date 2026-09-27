@@ -35,6 +35,19 @@ pub enum Message {
     },
 }
 
+impl Message {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Register { .. } => "register",
+            Self::RegisterAck { .. } => "register_ack",
+            Self::Ping { .. } => "ping",
+            Self::Pong { .. } => "pong",
+            Self::ExecRequest { .. } => "exec_request",
+            Self::ExecResponse { .. } => "exec_response",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum ControlRequest {
