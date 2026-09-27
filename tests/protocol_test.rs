@@ -4,6 +4,8 @@ use tetherd::protocol::cipher::CipherState;
 use tetherd::protocol::cipher::{read_encrypted, write_encrypted};
 use tetherd::protocol::handshake::{client_handshake, server_handshake};
 use tetherd::protocol::message::Message;
+use tetherd::protocol::transport::{spawn_message_transport, stop_transport};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 
 #[test]
@@ -66,6 +68,63 @@ async fn handshake_and_encrypted_message_round_trip() {
         .unwrap();
     assert!(matches!(response, Message::Pong { nonce: 77 }));
     tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fragmented_frames_remain_synchronized_under_bidirectional_traffic() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let psk = [0x33u8; 32];
+
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let channel = server_handshake(stream, &psk).await.unwrap();
+        let mut transport = spawn_message_transport(channel, Duration::from_secs(2), 16);
+
+        for expected in 1u64..=32 {
+            let message = tokio::time::timeout(Duration::from_secs(2), transport.incoming.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(message, Message::Ping { nonce } if nonce == expected));
+            transport
+                .outgoing
+                .try_send(Message::Pong { nonce: expected })
+                .unwrap();
+        }
+
+        stop_transport(&mut transport).await;
+    });
+
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let mut channel = client_handshake(stream, &psk).await.unwrap();
+
+    for nonce in 1u64..=32 {
+        let plaintext = serde_json::to_vec(&Message::Ping { nonce }).unwrap();
+        let sealed = channel.send_cipher.seal(&plaintext).unwrap();
+        let len = u32::try_from(sealed.len()).unwrap().to_be_bytes();
+
+        for byte in len {
+            channel.writer.write_all(&[byte]).await.unwrap();
+            tokio::task::yield_now().await;
+        }
+        for chunk in sealed.chunks(3) {
+            channel.writer.write_all(chunk).await.unwrap();
+            tokio::task::yield_now().await;
+        }
+        channel.writer.flush().await.unwrap();
+
+        let response: Message =
+            read_encrypted(&mut channel.reader, &mut channel.recv_cipher)
+                .await
+                .unwrap();
+        assert!(matches!(response, Message::Pong { nonce: value } if value == nonce));
+    }
+
+    tokio::time::timeout(Duration::from_secs(5), server)
         .await
         .unwrap()
         .unwrap();
