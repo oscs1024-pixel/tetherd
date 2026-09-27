@@ -7,8 +7,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
 use tetherd::config::Config;
+use tetherd::protocol::cipher::{read_encrypted, write_encrypted};
+use tetherd::protocol::handshake::server_handshake;
 use tetherd::protocol::message::{ControlRequest, ControlResponse, Message};
 use tetherd::{ctl, daemon, join};
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
 use tokio::sync::watch;
 
 fn free_port() -> u16 {
@@ -124,6 +128,106 @@ inherit_env = false
         .unwrap()
         .unwrap()
         .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), join_task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fragmented_encrypted_frame_survives_multiple_watchdog_ticks() {
+    let dir = tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let psk = [0x33u8; 32];
+    let psk_path = dir.path().join("psk");
+    fs::write(&psk_path, STANDARD.encode(psk)).unwrap();
+    fs::set_permissions(&psk_path, fs::Permissions::from_mode(0o600)).unwrap();
+    let config_path = dir.path().join("tetherd.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[auth]
+credential = "pair"
+psk_file = {:?}
+
+[join]
+server = "{}"
+name = "fragmented"
+heartbeat_secs = 1
+heartbeat_timeout_secs = 6
+reconnect_secs = 1
+connect_timeout_secs = 2
+write_timeout_secs = 2
+
+[exec]
+allow_exec = []
+"#,
+            psk_path, addr
+        ),
+    )
+    .unwrap();
+    let config = Arc::new(Config::load(&config_path).unwrap());
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut channel = server_handshake(stream, &psk).await.unwrap();
+        let registration: Message =
+            read_encrypted(&mut channel.reader, &mut channel.recv_cipher)
+                .await
+                .unwrap();
+        assert!(matches!(registration, Message::Register { .. }));
+        write_encrypted(
+            &mut channel.writer,
+            &mut channel.send_cipher,
+            &Message::RegisterAck {
+                ok: true,
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let plaintext = serde_json::to_vec(&Message::Ping { nonce: 777 }).unwrap();
+        let sealed = channel.send_cipher.seal(&plaintext).unwrap();
+        let len = u32::try_from(sealed.len()).unwrap().to_be_bytes();
+
+        channel.writer.write_all(&len[..2]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        channel.writer.write_all(&len[2..]).await.unwrap();
+        channel.writer.write_all(&sealed[..5]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        channel.writer.write_all(&sealed[5..]).await.unwrap();
+
+        loop {
+            match read_encrypted::<_, Message>(&mut channel.reader, &mut channel.recv_cipher)
+                .await
+                .unwrap()
+            {
+                Message::Pong { nonce: 777 } => return,
+                Message::Ping { nonce } => {
+                    write_encrypted(
+                        &mut channel.writer,
+                        &mut channel.send_cipher,
+                        &Message::Pong { nonce },
+                    )
+                    .await
+                    .unwrap();
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let join_task = tokio::spawn(join::run(config, shutdown_rx));
+    tokio::time::timeout(Duration::from_secs(8), server)
+        .await
+        .expect("fragmented frame must not desynchronize the reader")
+        .unwrap();
+    shutdown_tx.send(true).unwrap();
     tokio::time::timeout(Duration::from_secs(3), join_task)
         .await
         .unwrap()
