@@ -83,6 +83,15 @@ async fn real_main() -> Result<i32> {
                     let remote_timeout = timeout
                         .unwrap_or(config.daemon.control_timeout_secs)
                         .clamp(1, config.daemon.control_timeout_secs);
+                    let transfer_budget = daemon::output_transfer_budget(Duration::from_secs(
+                        config.daemon.exec_output_idle_timeout_secs,
+                    ));
+                    let request_timeout = Duration::from_secs(remote_timeout)
+                        .saturating_add(transfer_budget)
+                        .saturating_add(Duration::from_secs(
+                            config.daemon.control_request_timeout_secs,
+                        ))
+                        .saturating_add(Duration::from_secs(2));
                     (
                         ControlRequest::Exec {
                             credential,
@@ -91,7 +100,7 @@ async fn real_main() -> Result<i32> {
                             timeout_secs: timeout,
                         },
                         json,
-                        Duration::from_secs(remote_timeout.saturating_add(10)),
+                        request_timeout,
                     )
                 }
             };
