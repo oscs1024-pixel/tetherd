@@ -93,30 +93,31 @@ async fn handle_client(
         },
         ControlRequest::Exec {
             credential,
-            argv,
+            command,
+            args,
             timeout_secs,
         } => {
-            if argv.is_empty() {
-                ControlResponse::Error {
-                    message: "argv must not be empty".into(),
-                }
-            } else {
-                let remote_timeout = timeout_secs
-                    .unwrap_or(exec_timeout.as_secs())
-                    .clamp(1, exec_timeout.as_secs().max(1));
-                let response_timeout = Duration::from_secs(remote_timeout.saturating_add(5));
-                match state
-                    .exec(&credential, argv, remote_timeout, response_timeout)
-                    .await
-                {
-                    Ok(result) => ControlResponse::Ok {
-                        peers: None,
-                        result: Some(Box::new(result)),
-                    },
-                    Err(err) => ControlResponse::Error {
-                        message: err.to_string(),
-                    },
-                }
+            let remote_timeout = timeout_secs
+                .unwrap_or(exec_timeout.as_secs())
+                .clamp(1, exec_timeout.as_secs().max(1));
+            let response_timeout = Duration::from_secs(remote_timeout.saturating_add(5));
+            match state
+                .exec(
+                    &credential,
+                    command,
+                    args,
+                    remote_timeout,
+                    response_timeout,
+                )
+                .await
+            {
+                Ok(result) => ControlResponse::Ok {
+                    peers: None,
+                    result: Some(Box::new(result)),
+                },
+                Err(err) => ControlResponse::Error {
+                    message: err.to_string(),
+                },
             }
         }
     };
