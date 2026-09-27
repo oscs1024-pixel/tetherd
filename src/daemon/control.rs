@@ -111,7 +111,7 @@ async fn handle_client(
                 {
                     Ok(result) => ControlResponse::Ok {
                         peers: None,
-                        result: Some(Box::new(result)),
+                        result: Some(result),
                     },
                     Err(err) => ControlResponse::Error {
                         message: err.to_string(),
