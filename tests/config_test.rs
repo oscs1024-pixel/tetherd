@@ -156,3 +156,15 @@ fn config_file_rejects_symlink() {
     symlink(&target, &link).unwrap();
     assert!(Config::load(&link).is_err());
 }
+
+#[test]
+fn config_rejects_exec_output_idle_timeout_above_safety_ceiling() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let raw = base_config("psk_env = \"TETHERD_TEST_PSK\"").replace(
+        "[daemon]\n",
+        "[daemon]\nexec_output_idle_timeout_secs = 61\n",
+    );
+    fs::write(&path, raw).unwrap();
+    assert!(Config::load(&path).is_err());
+}
