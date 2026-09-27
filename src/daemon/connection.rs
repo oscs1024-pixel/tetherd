@@ -38,6 +38,37 @@ struct PendingRequest {
     tx: oneshot::Sender<Result<Message>>,
 }
 
+impl PendingRequest {
+    fn push_chunk(
+        &mut self,
+        sequence: u32,
+        stream: OutputStream,
+        bytes: &[u8],
+    ) -> Result<()> {
+        if sequence != self.next_sequence {
+            return Err(Error::Protocol(format!(
+                "unexpected exec output sequence: got {sequence}, expected {}",
+                self.next_sequence
+            )));
+        }
+        let target = match stream {
+            OutputStream::Stdout => &mut self.stdout,
+            OutputStream::Stderr => &mut self.stderr,
+        };
+        if target.len().saturating_add(bytes.len()) > MAX_EXEC_OUTPUT_BYTES {
+            return Err(Error::Protocol(
+                "exec output exceeds aggregate limit".into(),
+            ));
+        }
+        target.extend_from_slice(bytes);
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::Protocol("exec output sequence exhausted".into()))?;
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 pub struct SharedState {
     pub peers: RwLock<HashMap<String, PeerHandle>>,
@@ -268,24 +299,7 @@ pub async fn serve(
                             if request.session_id != session_id {
                                 log::debug!("ignoring stale exec output chunk id={id}");
                             } else {
-                                if sequence != request.next_sequence {
-                                    break Err(Error::Protocol(format!(
-                                        "unexpected exec output sequence: got {sequence}, expected {}",
-                                        request.next_sequence
-                                    )));
-                                }
-                                let target = match stream {
-                                    OutputStream::Stdout => &mut request.stdout,
-                                    OutputStream::Stderr => &mut request.stderr,
-                                };
-                                if target.len().saturating_add(bytes.len()) > MAX_EXEC_OUTPUT_BYTES {
-                                    break Err(Error::Protocol("exec output exceeds aggregate limit".into()));
-                                }
-                                target.extend_from_slice(&bytes);
-                                request.next_sequence = request
-                                    .next_sequence
-                                    .checked_add(1)
-                                    .ok_or_else(|| Error::Protocol("exec output sequence exhausted".into()))?;
+                                request.push_chunk(sequence, stream, &bytes)?;
                             }
                         } else {
                             log::debug!("ignoring unknown exec output chunk id={id}");
@@ -477,6 +491,29 @@ mod tests {
         assert!(pending.contains_key(&new_id));
         drop(pending);
         assert!(old_rx.await.unwrap().is_err());
+    }
+
+    #[test]
+    fn pending_output_rejects_out_of_order_and_oversized_chunks() {
+        let (tx, _rx) = oneshot::channel();
+        let mut pending = PendingRequest {
+            credential: "pair".into(),
+            session_id: Uuid::new_v4(),
+            next_sequence: 0,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            tx,
+        };
+        assert!(pending
+            .push_chunk(1, crate::protocol::message::OutputStream::Stdout, b"x")
+            .is_err());
+        assert!(pending
+            .push_chunk(0, crate::protocol::message::OutputStream::Stdout, b"ok")
+            .is_ok());
+        let oversized = vec![0u8; crate::protocol::MAX_EXEC_OUTPUT_BYTES];
+        assert!(pending
+            .push_chunk(1, crate::protocol::message::OutputStream::Stdout, &oversized)
+            .is_err());
     }
 
     #[tokio::test]
