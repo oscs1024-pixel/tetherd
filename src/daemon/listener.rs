@@ -29,6 +29,7 @@ pub async fn run(config: Arc<Config>, mut shutdown: watch::Receiver<bool>) -> Re
         config.daemon.control_socket.clone(),
         state.clone(),
         Duration::from_secs(config.daemon.control_timeout_secs),
+        Duration::from_secs(config.daemon.exec_output_idle_timeout_secs),
         Duration::from_secs(config.daemon.control_request_timeout_secs),
         config.daemon.max_control_connections,
         shutdown.clone(),
