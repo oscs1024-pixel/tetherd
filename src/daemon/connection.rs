@@ -171,10 +171,7 @@ async fn await_exec_response(
     // progress semantics. Each output chunk refreshes the inactivity timer,
     // while the absolute transfer budget prevents an authenticated peer from
     // extending the request forever with tiny chunks.
-    let transfer_budget = output_idle_timeout
-        .saturating_mul(4)
-        .max(Duration::from_secs(30))
-        .min(Duration::from_secs(300));
+    let transfer_budget = output_transfer_budget(output_idle_timeout);
     let hard_deadline = tokio::time::Instant::now() + transfer_budget;
     let mut idle_deadline = tokio::time::Instant::now() + output_idle_timeout;
 
@@ -197,6 +194,13 @@ async fn await_exec_response(
             }
         }
     }
+}
+
+fn output_transfer_budget(output_idle_timeout: Duration) -> Duration {
+    output_idle_timeout
+        .saturating_mul(4)
+        .max(Duration::from_secs(30))
+        .min(Duration::from_secs(300))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -466,7 +470,10 @@ fn valid_peer_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{cleanup_session, PeerHandle, PendingRequest, SharedState, SESSION_QUEUE_CAPACITY};
+    use super::{
+        await_exec_response, cleanup_session, output_transfer_budget, PeerHandle, PendingRequest,
+        SharedState, SESSION_QUEUE_CAPACITY,
+    };
     use crate::protocol::message::Message;
     use crate::Error;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -569,6 +576,66 @@ mod tests {
                 &oversized
             )
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn output_progress_extends_only_the_transport_idle_deadline() {
+        let (result_tx, result_rx) = oneshot::channel();
+        let (progress_tx, progress_rx) = watch::channel(0u64);
+        let waiter = tokio::spawn(await_exec_response(
+            result_rx,
+            progress_rx,
+            Duration::from_millis(20),
+            Duration::from_millis(60),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(45)).await;
+        progress_tx.send_replace(1);
+        tokio::time::sleep(Duration::from_millis(45)).await;
+        progress_tx.send_replace(2);
+        result_tx
+            .send(Ok(Message::Pong { nonce: 99 }))
+            .expect("waiter must still be alive");
+
+        let result = tokio::time::timeout(Duration::from_millis(200), waiter)
+            .await
+            .expect("progress should keep transport phase alive")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result, Message::Pong { nonce: 99 }));
+    }
+
+    #[tokio::test]
+    async fn output_inactivity_times_out_after_command_deadline() {
+        let (_result_tx, result_rx) = oneshot::channel::<crate::Result<Message>>();
+        let (_progress_tx, progress_rx) = watch::channel(0u64);
+        let started = Instant::now();
+        let result = await_exec_response(
+            result_rx,
+            progress_rx,
+            Duration::from_millis(20),
+            Duration::from_millis(40),
+        )
+        .await;
+        assert!(matches!(result, Err(Error::Timeout)));
+        assert!(started.elapsed() >= Duration::from_millis(50));
+        assert!(started.elapsed() < Duration::from_millis(250));
+    }
+
+    #[test]
+    fn output_transfer_budget_is_absolute_and_bounded() {
+        assert_eq!(
+            output_transfer_budget(Duration::from_secs(1)),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            output_transfer_budget(Duration::from_secs(15)),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            output_transfer_budget(Duration::from_secs(100)),
+            Duration::from_secs(300)
+        );
     }
 
     #[tokio::test]
