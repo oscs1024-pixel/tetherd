@@ -35,6 +35,7 @@ struct PendingRequest {
     next_sequence: u32,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+    progress: watch::Sender<u64>,
     tx: oneshot::Sender<Result<Message>>,
 }
 
@@ -60,6 +61,7 @@ impl PendingRequest {
             .next_sequence
             .checked_add(1)
             .ok_or_else(|| Error::Protocol("exec output sequence exhausted".into()))?;
+        self.progress.send_replace(u64::from(self.next_sequence));
         Ok(())
     }
 }
@@ -93,7 +95,7 @@ impl SharedState {
         command: String,
         args: Vec<String>,
         timeout_secs: u64,
-        response_timeout: Duration,
+        output_idle_timeout: Duration,
     ) -> Result<Message> {
         let peer = self
             .peers
@@ -105,6 +107,7 @@ impl SharedState {
 
         let id = Uuid::new_v4();
         let (tx, rx) = oneshot::channel();
+        let (progress_tx, progress_rx) = watch::channel(0u64);
         self.pending.lock().await.insert(
             id,
             PendingRequest {
@@ -113,6 +116,7 @@ impl SharedState {
                 next_sequence: 0,
                 stdout: Vec::new(),
                 stderr: Vec::new(),
+                progress: progress_tx,
                 tx,
             },
         );
@@ -134,13 +138,62 @@ impl SharedState {
             }
         }
 
-        match tokio::time::timeout(response_timeout, rx).await {
-            Ok(Ok(Ok(message))) => Ok(message),
-            Ok(Ok(Err(error))) => Err(error),
-            Ok(Err(_)) => Err(Error::Disconnected),
-            Err(_) => {
-                self.pending.lock().await.remove(&id);
-                Err(Error::Timeout)
+        let result = await_exec_response(
+            rx,
+            progress_rx,
+            Duration::from_secs(timeout_secs),
+            output_idle_timeout,
+        )
+        .await;
+        if result.is_err() {
+            self.pending.lock().await.remove(&id);
+        }
+        result
+    }
+}
+
+async fn await_exec_response(
+    mut rx: oneshot::Receiver<Result<Message>>,
+    mut progress: watch::Receiver<u64>,
+    command_timeout: Duration,
+    output_idle_timeout: Duration,
+) -> Result<Message> {
+    let command_deadline = tokio::time::Instant::now() + command_timeout;
+
+    tokio::select! {
+        result = &mut rx => {
+            return result.map_err(|_| Error::Disconnected)?;
+        }
+        _ = tokio::time::sleep_until(command_deadline) => {}
+    }
+
+    // Once the remote command deadline has elapsed, switch to transport
+    // progress semantics. Each output chunk refreshes the inactivity timer,
+    // while the absolute transfer budget prevents an authenticated peer from
+    // extending the request forever with tiny chunks.
+    let transfer_budget = output_idle_timeout
+        .saturating_mul(4)
+        .max(Duration::from_secs(30))
+        .min(Duration::from_secs(300));
+    let hard_deadline = tokio::time::Instant::now() + transfer_budget;
+    let mut idle_deadline = tokio::time::Instant::now() + output_idle_timeout;
+
+    loop {
+        tokio::select! {
+            result = &mut rx => {
+                return result.map_err(|_| Error::Disconnected)?;
+            }
+            changed = progress.changed() => {
+                if changed.is_err() {
+                    return Err(Error::Disconnected);
+                }
+                idle_deadline = tokio::time::Instant::now() + output_idle_timeout;
+            }
+            _ = tokio::time::sleep_until(idle_deadline) => {
+                return Err(Error::Timeout);
+            }
+            _ = tokio::time::sleep_until(hard_deadline) => {
+                return Err(Error::Timeout);
             }
         }
     }
@@ -454,6 +507,7 @@ mod tests {
                 next_sequence: 0,
                 stdout: Vec::new(),
                 stderr: Vec::new(),
+                progress: watch::channel(0u64).0,
                 tx: old_tx,
             },
         );
@@ -465,6 +519,7 @@ mod tests {
                 next_sequence: 0,
                 stdout: Vec::new(),
                 stderr: Vec::new(),
+                progress: watch::channel(0u64).0,
                 tx: new_tx,
             },
         );
@@ -497,6 +552,7 @@ mod tests {
             next_sequence: 0,
             stdout: Vec::new(),
             stderr: Vec::new(),
+            progress: watch::channel(0u64).0,
             tx,
         };
         assert!(pending
