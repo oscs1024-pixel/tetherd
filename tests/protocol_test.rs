@@ -2,8 +2,11 @@ use std::time::Duration;
 
 use tetherd::protocol::cipher::CipherState;
 use tetherd::protocol::cipher::{read_encrypted, write_encrypted};
+use tetherd::protocol::frame::read_raw_frame_limited;
 use tetherd::protocol::handshake::{client_handshake, server_handshake};
 use tetherd::protocol::message::Message;
+use rand::{rngs::StdRng, RngCore, SeedableRng};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 
 #[test]
@@ -88,4 +91,43 @@ async fn wrong_psk_is_rejected() {
         .unwrap()
         .unwrap();
     assert!(server_result.is_err());
+}
+
+#[test]
+fn cipher_rejects_random_malformed_authenticated_payloads() {
+    let key = [0xA5u8; 32];
+    let mut rng = StdRng::seed_from_u64(0x5445_5448_4552_44);
+    for _ in 0..512 {
+        let mut payload = vec![0u8; 8 + 16 + 64];
+        payload[..8].copy_from_slice(&0u64.to_be_bytes());
+        rng.fill_bytes(&mut payload[8..]);
+        let mut receiver = CipherState::new(&key, *b"TEST");
+        assert!(receiver.open(&payload).is_err());
+    }
+}
+
+#[tokio::test]
+async fn frame_reader_rejects_oversized_length_before_allocating_payload() {
+    let (mut writer, mut reader) = tokio::io::duplex(64);
+    writer
+        .write_all(&(4097u32).to_be_bytes())
+        .await
+        .unwrap();
+    let result = read_raw_frame_limited(&mut reader, 4096).await;
+    assert!(matches!(
+        result,
+        Err(tetherd::Error::FrameTooLarge {
+            actual: 4097,
+            limit: 4096
+        })
+    ));
+}
+
+#[tokio::test]
+async fn frame_reader_rejects_truncated_payload() {
+    let (mut writer, mut reader) = tokio::io::duplex(64);
+    writer.write_all(&(10u32).to_be_bytes()).await.unwrap();
+    writer.write_all(b"abc").await.unwrap();
+    writer.shutdown().await.unwrap();
+    assert!(read_raw_frame_limited(&mut reader, 64).await.is_err());
 }
