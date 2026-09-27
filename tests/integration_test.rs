@@ -19,6 +19,7 @@ fn free_port() -> u16 {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn daemon_join_ctl_exec_end_to_end() {
     let dir = tempdir().unwrap();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let port = free_port();
     let psk_path = dir.path().join("psk");
     fs::write(&psk_path, STANDARD.encode([0x55u8; 32])).unwrap();
@@ -83,7 +84,13 @@ max_extra_args = 4
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(socket_path.exists(), "control socket did not appear");
+    if !socket_path.exists() {
+        if daemon_task.is_finished() {
+            let result = daemon_task.await.unwrap();
+            panic!("daemon exited before control socket was ready: {result:?}");
+        }
+        panic!("control socket did not appear");
+    }
 
     let join_task = tokio::spawn(join::run(config.clone(), shutdown_rx));
 
