@@ -13,6 +13,7 @@ use crate::logging::{parse_level, ColorMode};
 use crate::{Error, Result};
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub log: LogConfig,
@@ -26,6 +27,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LogConfig {
     #[serde(default = "default_log_level")]
     pub level: String,
@@ -47,6 +49,7 @@ fn default_log_level() -> String {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuthConfig {
     pub credential: String,
     pub psk_file: Option<PathBuf>,
@@ -107,6 +110,14 @@ fn read_secret_file(path: &Path) -> Result<String> {
         )));
     }
     let mode = metadata.permissions().mode() & 0o777;
+    let euid = nix::unistd::Uid::effective().as_raw();
+    if metadata.uid() != euid && metadata.uid() != 0 {
+        return Err(Error::Config(format!(
+            "PSK file must be owned by root or the service UID: {} owner={}",
+            path.display(),
+            metadata.uid()
+        )));
+    }
     if mode & 0o077 != 0 {
         return Err(Error::Config(format!(
             "PSK file permissions must not grant group/other access: {} mode={mode:o}",
@@ -134,6 +145,7 @@ fn read_secret_file(path: &Path) -> Result<String> {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DaemonConfig {
     #[serde(default = "default_listen")]
     pub listen: SocketAddr,
@@ -151,6 +163,12 @@ pub struct DaemonConfig {
     pub control_request_timeout_secs: u64,
     #[serde(default = "default_max_control_connections")]
     pub max_control_connections: usize,
+    #[serde(default = "default_write_timeout_secs")]
+    pub write_timeout_secs: u64,
+    #[serde(default = "default_max_handshakes_per_minute")]
+    pub max_handshakes_per_minute: usize,
+    #[serde(default = "default_max_handshakes_per_ip_per_minute")]
+    pub max_handshakes_per_ip_per_minute: usize,
 }
 
 impl Default for DaemonConfig {
@@ -164,6 +182,9 @@ impl Default for DaemonConfig {
             control_timeout_secs: default_control_timeout_secs(),
             control_request_timeout_secs: default_control_request_timeout_secs(),
             max_control_connections: default_max_control_connections(),
+            write_timeout_secs: default_write_timeout_secs(),
+            max_handshakes_per_minute: default_max_handshakes_per_minute(),
+            max_handshakes_per_ip_per_minute: default_max_handshakes_per_ip_per_minute(),
         }
     }
 }
@@ -192,8 +213,18 @@ fn default_control_request_timeout_secs() -> u64 {
 fn default_max_control_connections() -> usize {
     64
 }
+fn default_write_timeout_secs() -> u64 {
+    10
+}
+fn default_max_handshakes_per_minute() -> usize {
+    600
+}
+fn default_max_handshakes_per_ip_per_minute() -> usize {
+    120
+}
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JoinConfig {
     #[serde(default = "default_server")]
     pub server: SocketAddr,
@@ -207,6 +238,8 @@ pub struct JoinConfig {
     pub reconnect_secs: u64,
     #[serde(default = "default_connect_timeout_secs")]
     pub connect_timeout_secs: u64,
+    #[serde(default = "default_write_timeout_secs")]
+    pub write_timeout_secs: u64,
 }
 
 impl Default for JoinConfig {
@@ -218,6 +251,7 @@ impl Default for JoinConfig {
             heartbeat_timeout_secs: default_heartbeat_timeout_secs(),
             reconnect_secs: default_reconnect_secs(),
             connect_timeout_secs: default_connect_timeout_secs(),
+            write_timeout_secs: default_write_timeout_secs(),
         }
     }
 }
@@ -239,6 +273,7 @@ fn default_connect_timeout_secs() -> u64 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecConfig {
     #[serde(default)]
     pub allow_exec: Vec<PathBuf>,
@@ -252,6 +287,8 @@ pub struct ExecConfig {
     pub work_dir: Option<PathBuf>,
     #[serde(default)]
     pub inherit_env: bool,
+    #[serde(default = "default_drain_grace_secs")]
+    pub drain_grace_secs: u64,
 }
 
 impl Default for ExecConfig {
@@ -263,6 +300,7 @@ impl Default for ExecConfig {
             max_concurrent: default_max_concurrent(),
             work_dir: None,
             inherit_env: false,
+            drain_grace_secs: default_drain_grace_secs(),
         }
     }
 }
@@ -276,9 +314,13 @@ fn default_output_limit() -> usize {
 fn default_max_concurrent() -> usize {
     4
 }
+fn default_drain_grace_secs() -> u64 {
+    2
+}
 
 impl Config {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        validate_config_file(path.as_ref())?;
         let raw = fs::read_to_string(path.as_ref())?;
         let config: Self = toml::from_str(&raw)?;
         config.validate()?;
@@ -316,10 +358,14 @@ impl Config {
             || self.daemon.control_timeout_secs == 0
             || self.daemon.control_request_timeout_secs == 0
             || self.daemon.max_control_connections == 0
+            || self.daemon.write_timeout_secs == 0
+            || self.daemon.max_handshakes_per_minute == 0
+            || self.daemon.max_handshakes_per_ip_per_minute == 0
             || self.join.heartbeat_secs == 0
             || self.join.heartbeat_timeout_secs <= self.join.heartbeat_secs
             || self.join.reconnect_secs == 0
             || self.join.connect_timeout_secs == 0
+            || self.join.write_timeout_secs == 0
             || self.exec.max_timeout_secs == 0
             || self.exec.max_output_bytes == 0
             || self.exec.max_output_bytes > 1024 * 1024
@@ -328,6 +374,31 @@ impl Config {
             return Err(Error::Config(
                 "timeout/limit values must be positive and heartbeat_timeout must exceed heartbeat interval"
                     .into(),
+            ));
+        }
+        if self.daemon.max_connections > 4096
+            || self.daemon.max_control_connections > 256
+            || self.daemon.max_handshakes_per_minute > 100_000
+            || self.daemon.max_handshakes_per_ip_per_minute > self.daemon.max_handshakes_per_minute
+            || self.exec.max_concurrent > 64
+            || self.daemon.heartbeat_timeout_secs > 3600
+            || self.daemon.handshake_timeout_secs > 300
+            || self.daemon.control_timeout_secs > 3600
+            || self.daemon.control_request_timeout_secs > 300
+            || self.daemon.write_timeout_secs > 300
+            || self.join.heartbeat_secs > 3600
+            || self.join.heartbeat_timeout_secs > 7200
+            || self.join.reconnect_secs > 3600
+            || self.join.connect_timeout_secs > 300
+            || self.join.write_timeout_secs > 300
+            || self.exec.max_timeout_secs > 3600
+            || self.exec.drain_grace_secs > 30
+        {
+            return Err(Error::Config("configured resource/timeout limit exceeds the production safety ceiling".into()));
+        }
+        if self.exec.inherit_env {
+            return Err(Error::Config(
+                "exec.inherit_env=true is forbidden; child environments are always cleared".into(),
             ));
         }
         if let Some(work_dir) = &self.exec.work_dir {
@@ -377,6 +448,40 @@ fn validate_identifier(field: &str, value: &str) -> Result<()> {
         return Err(Error::Config(format!(
             "{field} may contain only ASCII letters, digits, '.', '_' and '-'"
         )));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_config_file(path: &Path) -> Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() {
+        return Err(Error::Config(format!("configuration path is not a regular file: {}", path.display())));
+    }
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode & 0o022 != 0 {
+        return Err(Error::Config(format!(
+            "configuration file must not be group/world writable: {} mode={mode:o}",
+            path.display()
+        )));
+    }
+    let euid = nix::unistd::Uid::effective().as_raw();
+    if metadata.uid() != euid && metadata.uid() != 0 {
+        return Err(Error::Config(format!(
+            "configuration file must be owned by root or the service UID: {} owner={}",
+            path.display(),
+            metadata.uid()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_config_file(path: &Path) -> Result<()> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Err(Error::Config(format!("configuration path is not a regular file: {}", path.display())));
     }
     Ok(())
 }
