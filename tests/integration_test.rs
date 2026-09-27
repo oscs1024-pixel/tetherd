@@ -58,11 +58,15 @@ reconnect_max_secs = 4
 auth_failure_backoff_secs = 3
 
 [exec]
-allow_exec = ["/bin/echo"]
 max_timeout_secs = 3
 max_output_bytes = 4096
 max_concurrent = 2
 output_drain_timeout_secs = 1
+
+[exec.commands.echo]
+program = "/bin/echo"
+allow_extra_args = true
+max_extra_args = 4
 "#,
             psk_path, port, socket_path, port
         ),
@@ -101,7 +105,8 @@ output_drain_timeout_secs = 1
         &socket_path,
         ControlRequest::Exec {
             credential: "pair".into(),
-            argv: vec!["/bin/echo".into(), "e2e-ok".into()],
+            command: "echo".into(),
+            args: vec!["e2e-ok".into()],
             timeout_secs: Some(2),
         },
         Duration::from_secs(5),
