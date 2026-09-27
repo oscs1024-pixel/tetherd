@@ -34,6 +34,7 @@ pub async fn run(config: Arc<Config>, mut shutdown: watch::Receiver<bool>) -> Re
         shutdown.clone(),
     ));
 
+    let mut control_task_consumed = false;
     let loop_result = loop {
         tokio::select! {
             accepted = listener.accept() => {
@@ -97,6 +98,7 @@ pub async fn run(config: Arc<Config>, mut shutdown: watch::Receiver<bool>) -> Re
                 }
             }
             control_result = &mut control_task => {
+                control_task_consumed = true;
                 break match control_result {
                     Ok(Ok(())) if *shutdown.borrow() => Ok(()),
                     Ok(Ok(())) => Err(Error::Control("control service exited unexpectedly".into())),
@@ -114,10 +116,12 @@ pub async fn run(config: Arc<Config>, mut shutdown: watch::Receiver<bool>) -> Re
 
     sessions.abort_all();
     while sessions.join_next().await.is_some() {}
-    if !control_task.is_finished() {
-        control_task.abort();
+    if !control_task_consumed {
+        if !control_task.is_finished() {
+            control_task.abort();
+        }
+        let _ = control_task.await;
     }
-    let _ = control_task.await;
     log::info!("daemon stopped");
     loop_result
 }
