@@ -92,12 +92,13 @@ async fn handle_client(
         },
         ControlRequest::Exec {
             credential,
-            argv,
+            command,
+            args,
             timeout_secs,
         } => {
-            if argv.is_empty() {
+            if command.is_empty() {
                 ControlResponse::Error {
-                    message: "argv must not be empty".into(),
+                    message: "command profile must not be empty".into(),
                 }
             } else {
                 let remote_timeout = timeout_secs
@@ -105,7 +106,13 @@ async fn handle_client(
                     .clamp(1, exec_timeout.as_secs().max(1));
                 let response_timeout = Duration::from_secs(remote_timeout.saturating_add(5));
                 match state
-                    .exec(&credential, argv, remote_timeout, response_timeout)
+                    .exec(
+                        &credential,
+                        command,
+                        args,
+                        remote_timeout,
+                        response_timeout,
+                    )
                     .await
                 {
                     Ok(result) => ControlResponse::Ok {
