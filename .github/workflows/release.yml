@@ -26,7 +26,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          name="tetherd-${RUNNER_OS,,}-${RUNNER_ARCH,,}"
+          os="$(printf '%s' "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')"
+          arch="$(printf '%s' "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]')"
+          name="tetherd-${os}-${arch}"
           mkdir -p dist
           cp target/release/tetherd dist/tetherd
           cp README.md LICENSE SECURITY.md tetherd.example.toml dist/
