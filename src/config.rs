@@ -96,7 +96,7 @@ impl AuthConfig {
 #[cfg(unix)]
 fn read_secret_file(path: &Path) -> Result<String> {
     use std::fs::OpenOptions;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
     let mut file = OpenOptions::new()
         .read(true)
