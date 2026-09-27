@@ -214,7 +214,7 @@ pub async fn serve(
                     }
                     Ok(other) => {
                         last_seen = Instant::now();
-                        log::debug!("ignoring unexpected message={:?}", other);
+                        log::debug!("ignoring unexpected message kind={}", other.kind());
                     }
                     Err(err) => break Err(err),
                 }
