@@ -2,6 +2,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use log::LevelFilter;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::net::SocketAddr;
@@ -276,6 +277,9 @@ fn default_connect_timeout_secs() -> u64 {
 #[serde(deny_unknown_fields)]
 pub struct ExecConfig {
     #[serde(default)]
+    pub commands: HashMap<String, CommandProfile>,
+    /// Legacy raw-path allowlist. Non-empty values are rejected by validation.
+    #[serde(default)]
     pub allow_exec: Vec<PathBuf>,
     #[serde(default = "default_exec_timeout_secs")]
     pub max_timeout_secs: u64,
@@ -291,9 +295,24 @@ pub struct ExecConfig {
     pub drain_grace_secs: u64,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandProfile {
+    pub program: PathBuf,
+    #[serde(default)]
+    pub fixed_args: Vec<String>,
+    #[serde(default)]
+    pub allow_user_args: bool,
+    #[serde(default = "default_max_user_args")]
+    pub max_user_args: usize,
+    #[serde(default = "default_max_user_arg_bytes")]
+    pub max_user_arg_bytes: usize,
+}
+
 impl Default for ExecConfig {
     fn default() -> Self {
         Self {
+            commands: HashMap::new(),
             allow_exec: Vec::new(),
             max_timeout_secs: default_exec_timeout_secs(),
             max_output_bytes: default_output_limit(),
@@ -316,6 +335,12 @@ fn default_max_concurrent() -> usize {
 }
 fn default_drain_grace_secs() -> u64 {
     2
+}
+fn default_max_user_args() -> usize {
+    16
+}
+fn default_max_user_arg_bytes() -> usize {
+    16 * 1024
 }
 
 impl Config {
@@ -408,22 +433,44 @@ impl Config {
                 ));
             }
         }
-        for executable in &self.exec.allow_exec {
-            if !executable.is_absolute() {
+        if !self.exec.allow_exec.is_empty() {
+            return Err(Error::Config(
+                "exec.allow_exec is no longer accepted; define least-privilege exec.commands profiles"
+                    .into(),
+            ));
+        }
+        for (name, profile) in &self.exec.commands {
+            validate_identifier("exec command id", name)?;
+            if !profile.program.is_absolute() {
                 return Err(Error::Config(format!(
-                    "exec allowlist entry must be an absolute path: {}",
-                    executable.display()
+                    "exec.commands.{name}.program must be an absolute path: {}",
+                    profile.program.display()
                 )));
             }
-            if executable
+            if profile
+                .program
                 .to_string_lossy()
                 .chars()
                 .any(|ch| ch.is_control())
             {
-                return Err(Error::Config(
-                    "exec allowlist paths must not contain control characters".into(),
-                ));
+                return Err(Error::Config(format!(
+                    "exec.commands.{name}.program must not contain control characters"
+                )));
             }
+            if profile.max_user_args > 64 || profile.max_user_arg_bytes > 64 * 1024 {
+                return Err(Error::Config(format!(
+                    "exec.commands.{name} argument limits exceed the production safety ceiling"
+                )));
+            }
+            if !profile.allow_user_args
+                && (profile.max_user_args != default_max_user_args()
+                    || profile.max_user_arg_bytes != default_max_user_arg_bytes())
+            {
+                return Err(Error::Config(format!(
+                    "exec.commands.{name} sets user argument limits but allow_user_args=false"
+                )));
+            }
+            validate_argument_vector(&format!("exec.commands.{name}.fixed_args"), &profile.fixed_args, 64, 64 * 1024)?;
         }
         Ok(())
     }
@@ -482,6 +529,30 @@ fn validate_config_file(path: &Path) -> Result<()> {
     let metadata = fs::metadata(path)?;
     if !metadata.is_file() {
         return Err(Error::Config(format!("configuration path is not a regular file: {}", path.display())));
+    }
+    Ok(())
+}
+
+fn validate_argument_vector(
+    field: &str,
+    args: &[String],
+    max_args: usize,
+    max_bytes: usize,
+) -> Result<()> {
+    if args.len() > max_args {
+        return Err(Error::Config(format!("{field} contains too many arguments")));
+    }
+    let mut total = 0usize;
+    for arg in args {
+        if arg.as_bytes().contains(&0) || arg.chars().any(char::is_control) {
+            return Err(Error::Config(format!("{field} contains NUL/control characters")));
+        }
+        total = total
+            .checked_add(arg.len())
+            .ok_or_else(|| Error::Config(format!("{field} byte count overflow")))?;
+    }
+    if total > max_bytes {
+        return Err(Error::Config(format!("{field} exceeds the configured byte ceiling")));
     }
     Ok(())
 }
