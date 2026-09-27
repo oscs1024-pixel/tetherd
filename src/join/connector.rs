@@ -42,7 +42,10 @@ pub async fn run(config: Arc<Config>, mut shutdown: watch::Receiver<bool>) -> Re
 
         let delay = reconnect_delay(&config, failures, result.as_ref().err());
         match &result {
-            Ok(()) => log::warn!("connection ended, scheduling reconnect delay_ms={}", delay.as_millis()),
+            Ok(()) => log::warn!(
+                "connection ended, scheduling reconnect delay_ms={}",
+                delay.as_millis()
+            ),
             Err(err) => log::warn!(
                 "connection failed error={} reconnect_delay_ms={}",
                 err,
@@ -137,8 +140,7 @@ async fn connect_once(
         config.join.name
     );
 
-    let mut transport =
-        spawn_message_transport(channel, write_timeout, SESSION_QUEUE_CAPACITY);
+    let mut transport = spawn_message_transport(channel, write_timeout, SESSION_QUEUE_CAPACITY);
     let mut exec_tasks = JoinSet::<Message>::new();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(config.join.heartbeat_secs));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
